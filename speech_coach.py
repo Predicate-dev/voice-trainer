@@ -49,7 +49,7 @@ class SpeechCoach:
             self.microphone = sr.Microphone()
             self.microphone_available = True
         except Exception as e:
-            print(f"⚠️  Microphone not available: {e}")
+            print(f"  Microphone not available: {e}")
             self.microphone_available = False
 
         # Text-to-speech setup
@@ -107,12 +107,12 @@ class SpeechCoach:
         """Start the speech coaching session with keyboard triggers."""
         print("🎤 Speech Coach Ready!")
         if not self.microphone_available:
-            print("❌ Cannot start: No microphone available")
+            print(" Cannot start: No microphone available")
             return
         print("Calibrating microphone...")
         with self.microphone as source:
             self.recognizer.adjust_for_ambient_noise(source, duration=2)
-        print("✅ Calibration complete!")
+        print(" Calibration complete!")
         print("Controls: [r] Start  [p] Pause/Resume  [s] Stop  [Ctrl+C] Quit")
         print("=" * 50)
         self.running = True
@@ -157,7 +157,7 @@ class SpeechCoach:
     
     def stop(self):
         """Stop the speech coaching session and print review."""
-        print("\n🛑 Stopping Speech Coach...")
+        print("\n Stopping Speech Coach...")
         self.running = False
         self.paused = True
         self.session_active = False
@@ -177,19 +177,26 @@ class SpeechCoach:
 
     def _whisper_transcribe(self):
         """Transcribe the recorded WAV file using OpenAI Whisper."""
-        print("\n🔍 Transcribing with Whisper (this may take a moment)...")
+        if not self.audio_record_path:
+            print("No audio file to transcribe.")
+            self.transcript = []
+            self.transcript_text = ""
+            return
+        print("\n Transcribing with Whisper (this may take a moment)...")
         import whisper
         model = whisper.load_model("base")
         result = model.transcribe(self.audio_record_path)
-        self.transcript = result["text"].split()  # For word-level diff
-        self.transcript_text = result["text"]
-        print("📝 Whisper transcript:")
+        # result["text"] is always a string
+        self.transcript_text = str(result["text"]) if result["text"] is not None else ""
+        self.transcript = self.transcript_text.split() if self.transcript_text else []
+        print(" Whisper transcript:")
         print(self.transcript_text)
         # Clean up temp file
-        try:
-            os.remove(self.audio_record_path)
-        except Exception:
-            pass
+        if self.audio_record_path:
+            try:
+                os.remove(self.audio_record_path)
+            except Exception:
+                pass
 
     def _key_listener(self):
         """Listen for keyboard input to control start/pause/stop."""
@@ -210,19 +217,19 @@ class SpeechCoach:
     def _handle_key(self, key):
         if key == 'r':
             if not self.session_active:
-                print("▶️  Session started!")
+                print(" Session started!")
                 self.session_active = True
                 self.paused = False
                 self.session_start_time = time.time()
             elif self.paused:
-                print("▶️  Resumed.")
+                print(" Resumed.")
                 self.paused = False
         elif key == 'p':
             if self.session_active and not self.paused:
-                print("⏸️  Paused.")
+                print(" Paused.")
                 self.paused = True
         elif key == 's':
-            print("🛑 Stop key pressed.")
+            print(" Stop key pressed.")
             self.stop()
     
     def _audio_capture_loop(self):
@@ -246,7 +253,7 @@ class SpeechCoach:
                     audio_data = np.frombuffer(data, dtype=np.float32)
                     self.audio_buffer.append(audio_data)
                 except Exception as e:
-                    print(f"⚠️  Audio capture error: {e}")
+                    print(f" Audio capture error: {e}")
                     break
         finally:
             if stream is not None:
@@ -277,13 +284,13 @@ class SpeechCoach:
                 except sr.UnknownValueError:
                     pass
                 except sr.RequestError as e:
-                    print(f"⚠️  Speech recognition error: {e}")
+                    print(f" Speech recognition error: {e}")
             except sr.WaitTimeoutError:
                 pass
             except KeyboardInterrupt:
                 break
             except Exception as e:
-                print(f"⚠️  Recognition loop error: {e}")
+                print(f" Recognition loop error: {e}")
                 time.sleep(0.1)
     
     def _analysis_loop(self):
@@ -306,7 +313,7 @@ class SpeechCoach:
                 self._print_live_metrics()
                 time.sleep(1)
             except Exception as e:
-                print(f"⚠️  Analysis error: {e}")
+                print(f" Analysis error: {e}")
                 time.sleep(1)
     
     def _analyze_volume(self):
@@ -383,38 +390,38 @@ class SpeechCoach:
             print("No session data to review.")
             return
         duration = self.session_end_time - self.session_start_time
-        print("\n📋 SESSION REVIEW")
+        print("\n SESSION REVIEW")
         print("=" * 40)
-        print(f"🕒 Duration: {duration:.1f} seconds")
-        print(f"📝 Total Words: {self.total_words}")
+        print(f" Duration: {duration:.1f} seconds")
+        print(f" Total Words: {self.total_words}")
         if self.max_wpm != float('-inf') and self.min_wpm != float('inf'):
-            print(f"📈 Max WPM: {self.max_wpm:.1f}")
-            print(f"📉 Min WPM: {self.min_wpm:.1f}")
+            print(f" Max WPM: {self.max_wpm:.1f}")
+            print(f" Min WPM: {self.min_wpm:.1f}")
         # Volume stats
         if self.rms_values:
-            print(f"🔊 Volume (RMS): avg={np.mean(self.rms_values):.4f} min={np.min(self.rms_values):.4f} max={np.max(self.rms_values):.4f} sd={np.std(self.rms_values):.4f}")
-        print(f"🔊 Low Volume Alerts: {self.low_volume_count}")
-        print(f"🔉 Loud Volume Alerts: {self.loud_volume_count}")
+            print(f" Volume (RMS): avg={np.mean(self.rms_values):.4f} min={np.min(self.rms_values):.4f} max={np.max(self.rms_values):.4f} sd={np.std(self.rms_values):.4f}")
+        print(f" Low Volume Alerts: {self.low_volume_count}")
+        print(f" Loud Volume Alerts: {self.loud_volume_count}")
         # Pitch stats
         if self.pitch_history:
-            print(f"🎵 Pitch (ZCR): avg={np.mean(self.pitch_history):.4f} min={np.min(self.pitch_history):.4f} max={np.max(self.pitch_history):.4f} sd={np.std(self.pitch_history):.4f}")
-        print(f"🎵 Monotone Alerts: {self.monotone_count}")
+            print(f" Pitch (ZCR): avg={np.mean(self.pitch_history):.4f} min={np.min(self.pitch_history):.4f} max={np.max(self.pitch_history):.4f} sd={np.std(self.pitch_history):.4f}")
+        print(f" Monotone Alerts: {self.monotone_count}")
         # Vibe/prosody score (simple: higher pitch/volume SD = more expressive)
         vibe_score = 0
         if self.rms_values and self.pitch_history:
             vibe_score = (np.std(self.rms_values) + np.std(self.pitch_history)) * 50
-            print(f"✨ Vibe/Prosody Score: {vibe_score:.1f} (higher = more expressive)")
+            print(f" Vibe/Prosody Score: {vibe_score:.1f} (higher = more expressive)")
         print("=" * 40)
 
         # Speech-based grading and transcript
         if self.mode == "speech" and self.reference_text:
             import difflib
             user_text = getattr(self, "transcript_text", " ".join(self.transcript))
-            print("\n📝 Full Transcript (Whisper):")
+            print("\n Full Transcript (Whisper):")
             print(user_text)
-            print("\n📝 Reference Speech:")
+            print("\n Reference Speech:")
             print(self.reference_text)
-            print("\n🔍 Detailed Comparison:")
+            print("\n Detailed Comparison:")
             # Word-level diff
             ref_words = self.reference_text.split()
             user_words = user_text.split()
@@ -436,17 +443,17 @@ class SpeechCoach:
                 elif tag == 'insert':
                     mistakes.append(f"Extra: '{' '.join(user_words[j1:j2])}'")
             accuracy = accuracy_count / max(1, total)
-            print(f"\n✅ Accuracy: {accuracy*100:.1f}%")
+            print(f"\n Accuracy: {accuracy*100:.1f}%")
             if mistakes:
-                print("\n❌ Mistakes:")
-                for m in mistakes[:10]:
+                print("\n Mistakes:")
+                for m in mistakes: # Can be long, so limit output?
                     print(f"- {m}")
-                if len(mistakes) > 10:
-                    print(f"...and {len(mistakes)-10} more.")
+                # if len(mistakes) > 10:
+                #     print(f"...and {len(mistakes)-10} more.")
             else:
-                print("🎉 No mistakes detected!")
+                print(" No mistakes detected!")
             # Text summary
-            print("\n📝 Summary:")
+            print("\n Summary:")
             if accuracy > 0.95:
                 print("Excellent! Your recitation was very accurate. Keep practicing for even more fluency.")
             elif accuracy > 0.8:
@@ -459,7 +466,7 @@ class SpeechCoach:
         if self.mode == "speech":
             # No real-time feedback in speech mode
             return
-        print(f"💬 FEEDBACK: {message}")
+        print(f" FEEDBACK: {message}")
         # Use TTS in a separate thread to avoid blocking
         if self.tts_available:
             def speak():
@@ -467,30 +474,30 @@ class SpeechCoach:
                     self.tts_engine.say(message.split("! ")[-1])  # Remove emoji and speak the main message
                     self.tts_engine.runAndWait()
                 except Exception as e:
-                    print(f"⚠️  TTS error: {e}")
+                    print(f"  TTS error: {e}")
             tts_thread = threading.Thread(target=speak)
             tts_thread.daemon = True
             tts_thread.start()
         # Speech-based grading
         if self.mode == "speech" and self.reference_text:
-            print("\n📝 Speech Comparison:")
+            print("\n Speech Comparison:")
             user_text = " ".join(self.transcript)
             import difflib
             sm = difflib.SequenceMatcher(None, self.reference_text.split(), user_text.split())
             match = sm.ratio()
-            print(f"✅ Speech Match: {match*100:.1f}%")
+            print(f" Speech Match: {match*100:.1f}%")
             # Show missing/extra words (optional, simple diff)
             ref_words = set(self.reference_text.split())
             user_words = set(user_text.split())
             missing = ref_words - user_words
             extra = user_words - ref_words
-            print(f"❌ Missing words: {', '.join(list(missing)[:10])}{'...' if len(missing)>10 else ''}")
-            print(f"➕ Extra words: {', '.join(list(extra)[:10])}{'...' if len(extra)>10 else ''}")
+            print(f" Missing words: {', '.join(list(missing)[:10])}{'...' if len(missing)>10 else ''}")
+            print(f" Extra words: {', '.join(list(extra)[:10])}{'...' if len(extra)>10 else ''}")
             # Suggest corrections
             if match < 0.9:
-                print("💡 Suggestion: Practice reading the speech aloud, focusing on accuracy and pacing.")
+                print(" Suggestion: Practice reading the speech aloud, focusing on accuracy and pacing.")
             else:
-                print("🎉 Great job! Your recitation closely matches the reference.")
+                print(" Great job! Your recitation closely matches the reference.")
     
     def _print_live_metrics(self):
         """Print live metrics for debugging."""
@@ -520,9 +527,9 @@ class SpeechCoach:
         
         # Print metrics
         if PYAUDIO_AVAILABLE:
-            print(f"📊 Volume: {rms:.4f} | WPM: {wpm:.0f} | Pitch Var: {pitch_variation:.4f}")
+            print(f" Volume: {rms:.4f} | WPM: {wpm:.0f} | Pitch Var: {pitch_variation:.4f}")
         else:
-            print(f"📊 WPM: {wpm:.0f} | Volume: N/A | Pitch Var: N/A")
+            print(f" WPM: {wpm:.0f} | Volume: N/A | Pitch Var: N/A")
 
 
 def main():
@@ -532,9 +539,9 @@ def main():
     try:
         coach.start()
     except KeyboardInterrupt:
-        print("\n🛑 User interrupted")
+        print("\n User interrupted")
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f" Error: {e}")
     finally:
         coach.stop()
 
