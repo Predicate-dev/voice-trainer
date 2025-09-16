@@ -102,6 +102,21 @@ python speech_coach.py
 5. **Live Metrics**: Displays current metrics for debugging and monitoring
 6. **Session Review**: When you stop, a summary is shown: duration, total words, max/min WPM, and alert counts.
 
+## Modes
+
+- **Freestyle Mode**: Speak freely and get real-time feedback on pacing, volume, and tone.
+- **Speech Mode**: Provide a reference speech (text file), recite it, and get a detailed accuracy report and feedback at the end. Uses OpenAI Whisper for highly accurate transcription.
+
+### Speech Mode Example
+```bash
+python main.py --mode speech --reference-speech speech.txt
+```
+- At the end, you'll see:
+  - The full transcript of your speech (via Whisper)
+  - A word-level comparison with the reference
+  - Highlighted mistakes (missing, extra, or incorrect words)
+  - An overall accuracy score and summary
+
 ## Configuration
 
 You can adjust the feedback thresholds:
@@ -122,6 +137,8 @@ You can adjust the feedback thresholds:
 - `pyaudio`: For real-time audio capture
 - `pyttsx3`: For text-to-speech feedback
 - `numpy`: For audio signal processing
+- `openai-whisper`: For accurate offline transcription in speech mode
+- `soundfile`: For saving audio for Whisper
 
 ## Troubleshooting
 

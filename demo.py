@@ -67,6 +67,11 @@ def demo_speech_coach():
     print("   • Performance monitoring")
     print()
     
+    print("🔍 Advanced Features:")
+    print("   • Speech mode: Recite a reference speech and get a detailed accuracy report using OpenAI Whisper")
+    print("   • Whisper-powered transcription for high accuracy in speech mode")
+    print()
+    
     print("💡 Usage Examples:")
     print()
     print("   Basic usage:")
@@ -80,6 +85,10 @@ def demo_speech_coach():
     print()
     print("   Run test simulation:")
     print("   $ python test_speech_coach.py")
+    print()
+    print("   Speech mode (Whisper):")
+    print("   $ python main.py --mode speech --reference-speech speech.txt")
+    print("   (At the end, you'll see a full transcript, word-level comparison, and accuracy score)")
     print()
     
     print("🔧 Technical Architecture:")
