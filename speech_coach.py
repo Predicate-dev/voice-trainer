@@ -102,6 +102,11 @@ class SpeechCoach:
         self.last_volume_feedback = 0
         self.last_tone_feedback = 0
         self.feedback_cooldown = 5  # seconds
+
+        # Filler word detection
+        self.filler_words = ["um", "uh", "like", "you know", "so", "actually", "basically", "literally", "right", "okay", "well"]
+        self.filler_word_counts = {}
+        self.filler_word_total = 0
         
     def start(self):
         """Start the speech coaching session with keyboard triggers."""
@@ -191,12 +196,30 @@ class SpeechCoach:
         self.transcript = self.transcript_text.split() if self.transcript_text else []
         print(" Whisper transcript:")
         print(self.transcript_text)
+        # Filler word detection on transcript
+        self._detect_filler_words(self.transcript_text)
         # Clean up temp file
         if self.audio_record_path:
             try:
                 os.remove(self.audio_record_path)
             except Exception:
                 pass
+
+    def _detect_filler_words(self, text):
+        """Detect and count filler words in the given text."""
+        import re
+        self.filler_word_counts = {}
+        self.filler_word_total = 0
+        text_lower = text.lower()
+        for word in self.filler_words:
+            # Use word boundaries for single words, substring for phrases
+            if " " in word:
+                count = text_lower.count(word)
+            else:
+                count = len(re.findall(rf'\b{re.escape(word)}\b', text_lower))
+            if count > 0:
+                self.filler_word_counts[word] = count
+                self.filler_word_total += count
 
     def _key_listener(self):
         """Listen for keyboard input to control start/pause/stop."""
@@ -411,6 +434,16 @@ class SpeechCoach:
         if self.rms_values and self.pitch_history:
             vibe_score = (np.std(self.rms_values) + np.std(self.pitch_history)) * 50
             print(f" Vibe/Prosody Score: {vibe_score:.1f} (higher = more expressive)")
+        # Filler word stats
+        print("=" * 40)
+        print(" Filler Words:")
+        if self.filler_word_total > 0:
+            print(f"  Total Filler Words: {self.filler_word_total}")
+            for word, count in self.filler_word_counts.items():
+                print(f"   - {word}: {count}")
+            print("  Try to reduce filler words for a more confident delivery!")
+        else:
+            print("  No filler words detected. Great job!")
         print("=" * 40)
 
         # Speech-based grading and transcript
@@ -418,7 +451,18 @@ class SpeechCoach:
             import difflib
             user_text = getattr(self, "transcript_text", " ".join(self.transcript))
             print("\n Full Transcript (Whisper):")
-            print(user_text)
+            # Highlight filler words in transcript
+            def highlight_filler(text, filler_words):
+                import re
+                def repl(match):
+                    return f"[{match.group(0).upper()}]"
+                for word in filler_words:
+                    if " " in word:
+                        text = text.replace(word, f"[{word.upper()}]")
+                    else:
+                        text = re.sub(rf'\b{re.escape(word)}\b', repl, text, flags=re.IGNORECASE)
+                return text
+            print(highlight_filler(user_text, self.filler_words))
             print("\n Reference Speech:")
             print(self.reference_text)
             print("\n Detailed Comparison:")
