@@ -28,7 +28,41 @@ pip install -r requirements.txt
 - **macOS**: `brew install portaudio`
 - **Windows**: PyAudio should install directly via pip
 
-## Usage
+**Optional**: For text-to-speech feedback, install system TTS:
+- **Ubuntu/Debian**: `sudo apt-get install espeak espeak-data`
+- **macOS**: Built-in TTS should work
+- **Windows**: Built-in TTS should work
+
+## Project Structure
+
+```
+voice-trainer/
+├── speech_coach.py     # Core speech analysis and coaching engine
+├── main.py            # CLI entry point with argument parsing
+├── demo.py            # Feature demonstration script
+├── test_speech_coach.py # Test suite with simulation
+├── requirements.txt   # Python dependencies
+├── config.ini         # Configuration file for thresholds
+├── README.md          # Documentation
+└── .gitignore         # Git ignore file
+```
+
+## Quick Start
+
+1. **Run the demo** to see what the system can do:
+   ```bash
+   python demo.py
+   ```
+
+2. **Test the core functionality** without microphone:
+   ```bash
+   python test_speech_coach.py
+   ```
+
+3. **Start the speech coach** (requires microphone):
+   ```bash
+   python main.py
+   ```
 
 ### Basic Usage
 ```bash
