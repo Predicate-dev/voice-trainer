@@ -30,10 +30,19 @@ import sys
 import time
 import select
 
+import tempfile
+import os
+
 class SpeechCoach:
-    """Real-time speech analysis and coaching system with start/pause/stop triggers and session review."""
-    
-    def __init__(self):
+
+    """Real-time speech analysis and coaching system with start/pause/stop triggers, session review, and two modes."""
+
+    def __init__(self, mode="freestyle", reference_text=None):
+        # Mode and reference
+        self.mode = mode
+        self.reference_text = reference_text
+        self.transcript = []  # For speech mode: store recognized text
+        self.audio_record_path = None  # Path to temp WAV file for Whisper
         # Speech recognition setup
         self.recognizer = sr.Recognizer()
         try:
@@ -82,7 +91,11 @@ class SpeechCoach:
         self.max_wpm = 0
         self.min_wpm = float('inf')
         self.low_volume_count = 0
+        self.loud_volume_count = 0
         self.monotone_count = 0
+        self.rms_values = []  # Store all RMS values for session
+        self.pitch_history = []  # Store all pitch (ZCR) values for session
+        self.loud_threshold = 0.2  # RMS threshold for too loud (customizable)
 
         # Feedback cooldowns (prevent spam)
         self.last_pacing_feedback = 0
@@ -108,7 +121,13 @@ class SpeechCoach:
         self.key_thread = threading.Thread(target=self._key_listener)
         self.key_thread.daemon = True
         self.key_thread.start()
-        if PYAUDIO_AVAILABLE:
+        if self.mode == "speech":
+            # Prepare temp WAV file for recording
+            self.audio_record_path = tempfile.mktemp(suffix=".wav")
+            self.audio_thread = threading.Thread(target=self._record_audio_wav)
+            self.audio_thread.daemon = True
+            self.audio_thread.start()
+        elif PYAUDIO_AVAILABLE:
             self.audio_thread = threading.Thread(target=self._audio_capture_loop)
             self.audio_thread.daemon = True
             self.audio_thread.start()
@@ -116,6 +135,25 @@ class SpeechCoach:
         self.analysis_thread.daemon = True
         self.analysis_thread.start()
         self._speech_recognition_loop()
+
+    def _record_audio_wav(self):
+        """Record the session to a WAV file for Whisper transcription (speech mode only)."""
+        import soundfile as sf
+        import pyaudio
+        p = pyaudio.PyAudio()
+        stream = p.open(format=pyaudio.paInt16, channels=1, rate=16000, input=True, frames_per_buffer=1024)
+        frames = []
+        while self.running:
+            data = stream.read(1024, exception_on_overflow=False)
+            frames.append(data)
+        stream.stop_stream()
+        stream.close()
+        p.terminate()
+        # Save to WAV
+        audio_bytes = b"".join(frames)
+        import numpy as np
+        audio_np = np.frombuffer(audio_bytes, dtype=np.int16)
+        sf.write(self.audio_record_path, audio_np, 16000)
     
     def stop(self):
         """Stop the speech coaching session and print review."""
@@ -132,7 +170,26 @@ class SpeechCoach:
             self.key_thread.join(timeout=1)
         self.session_end_time = time.time()
         print("✅ Speech Coach stopped.")
+        # If in speech mode, transcribe with Whisper before review
+        if self.mode == "speech" and self.audio_record_path:
+            self._whisper_transcribe()
         self._print_session_review()
+
+    def _whisper_transcribe(self):
+        """Transcribe the recorded WAV file using OpenAI Whisper."""
+        print("\n🔍 Transcribing with Whisper (this may take a moment)...")
+        import whisper
+        model = whisper.load_model("base")
+        result = model.transcribe(self.audio_record_path)
+        self.transcript = result["text"].split()  # For word-level diff
+        self.transcript_text = result["text"]
+        print("📝 Whisper transcript:")
+        print(self.transcript_text)
+        # Clean up temp file
+        try:
+            os.remove(self.audio_record_path)
+        except Exception:
+            pass
 
     def _key_listener(self):
         """Listen for keyboard input to control start/pause/stop."""
@@ -213,7 +270,10 @@ class SpeechCoach:
                         current_time = time.time()
                         self.word_timestamps.append((current_time, word_count))
                         self.total_words += word_count
-                        print(f"📝 Recognized: {text}")
+                        if self.mode == "freestyle":
+                            print(f"📝 Recognized: {text}")
+                        elif self.mode == "speech":
+                            self.transcript.append(text)
                 except sr.UnknownValueError:
                     pass
                 except sr.RequestError as e:
@@ -257,13 +317,19 @@ class SpeechCoach:
         # Calculate RMS of recent audio
         recent_audio = np.concatenate(list(self.audio_buffer)[-10:])  # Last 10 chunks
         rms = np.sqrt(np.mean(recent_audio ** 2))
-        
-        # Check if volume is too low
+        self.rms_values.append(rms)
+        # Check if volume is too low or too loud
         current_time = time.time()
         if (rms < self.volume_threshold and 
             current_time - self.last_volume_feedback > self.feedback_cooldown):
             self.low_volume_count += 1
             self._provide_feedback("🔊 Project your voice! Your volume is too low.")
+            self.last_volume_feedback = current_time
+        # Too loud
+        if (rms > self.loud_threshold and 
+            current_time - self.last_volume_feedback > self.feedback_cooldown):
+            self.loud_volume_count += 1
+            self._provide_feedback("🔉 You're getting a little loud. Let's keep a conversational tone.")
             self.last_volume_feedback = current_time
     
     def _analyze_pacing(self, current_time: float):
@@ -299,13 +365,11 @@ class SpeechCoach:
         # Calculate zero-crossing rate as a proxy for pitch
         zero_crossings = np.where(np.diff(np.signbit(recent_audio)))[0]
         zcr = len(zero_crossings) / len(recent_audio)
-        
         self.pitch_values.append(zcr)
-        
+        self.pitch_history.append(zcr)
         if len(self.pitch_values) >= 10:
             # Calculate pitch variation
             pitch_std = np.std(list(self.pitch_values)[-10:])
-            
             current_time = time.time()
             if (pitch_std < self.pitch_variation_threshold and 
                 current_time - self.last_tone_feedback > self.feedback_cooldown):
@@ -313,7 +377,8 @@ class SpeechCoach:
                 self._provide_feedback("🎵 Vary your pitch! Your speech sounds monotonous.")
                 self.last_tone_feedback = current_time
     def _print_session_review(self):
-        """Print a summary review of the session."""
+        """Print a detailed summary review of the session, including transcript and speech comparison in speech mode."""
+        import numpy as np
         if not self.session_start_time or not self.session_end_time:
             print("No session data to review.")
             return
@@ -325,14 +390,76 @@ class SpeechCoach:
         if self.max_wpm != float('-inf') and self.min_wpm != float('inf'):
             print(f"📈 Max WPM: {self.max_wpm:.1f}")
             print(f"📉 Min WPM: {self.min_wpm:.1f}")
+        # Volume stats
+        if self.rms_values:
+            print(f"🔊 Volume (RMS): avg={np.mean(self.rms_values):.4f} min={np.min(self.rms_values):.4f} max={np.max(self.rms_values):.4f} sd={np.std(self.rms_values):.4f}")
         print(f"🔊 Low Volume Alerts: {self.low_volume_count}")
+        print(f"🔉 Loud Volume Alerts: {self.loud_volume_count}")
+        # Pitch stats
+        if self.pitch_history:
+            print(f"🎵 Pitch (ZCR): avg={np.mean(self.pitch_history):.4f} min={np.min(self.pitch_history):.4f} max={np.max(self.pitch_history):.4f} sd={np.std(self.pitch_history):.4f}")
         print(f"🎵 Monotone Alerts: {self.monotone_count}")
+        # Vibe/prosody score (simple: higher pitch/volume SD = more expressive)
+        vibe_score = 0
+        if self.rms_values and self.pitch_history:
+            vibe_score = (np.std(self.rms_values) + np.std(self.pitch_history)) * 50
+            print(f"✨ Vibe/Prosody Score: {vibe_score:.1f} (higher = more expressive)")
         print("=" * 40)
+
+        # Speech-based grading and transcript
+        if self.mode == "speech" and self.reference_text:
+            import difflib
+            user_text = getattr(self, "transcript_text", " ".join(self.transcript))
+            print("\n📝 Full Transcript (Whisper):")
+            print(user_text)
+            print("\n📝 Reference Speech:")
+            print(self.reference_text)
+            print("\n🔍 Detailed Comparison:")
+            # Word-level diff
+            ref_words = self.reference_text.split()
+            user_words = user_text.split()
+            sm = difflib.SequenceMatcher(None, ref_words, user_words)
+            opcodes = sm.get_opcodes()
+            accuracy_count = 0
+            total = 0
+            mistakes = []
+            for tag, i1, i2, j1, j2 in opcodes:
+                if tag == 'equal':
+                    accuracy_count += (i2 - i1)
+                    total += (i2 - i1)
+                elif tag == 'replace':
+                    mistakes.append(f"Incorrect: '{' '.join(ref_words[i1:i2])}' → '{' '.join(user_words[j1:j2])}'")
+                    total += (i2 - i1)
+                elif tag == 'delete':
+                    mistakes.append(f"Missing: '{' '.join(ref_words[i1:i2])}'")
+                    total += (i2 - i1)
+                elif tag == 'insert':
+                    mistakes.append(f"Extra: '{' '.join(user_words[j1:j2])}'")
+            accuracy = accuracy_count / max(1, total)
+            print(f"\n✅ Accuracy: {accuracy*100:.1f}%")
+            if mistakes:
+                print("\n❌ Mistakes:")
+                for m in mistakes[:10]:
+                    print(f"- {m}")
+                if len(mistakes) > 10:
+                    print(f"...and {len(mistakes)-10} more.")
+            else:
+                print("🎉 No mistakes detected!")
+            # Text summary
+            print("\n📝 Summary:")
+            if accuracy > 0.95:
+                print("Excellent! Your recitation was very accurate. Keep practicing for even more fluency.")
+            elif accuracy > 0.8:
+                print("Good job! Review the mistakes above and try to reduce them in your next attempt.")
+            else:
+                print("Needs improvement. Focus on reading carefully and matching the reference speech word for word.")
     
     def _provide_feedback(self, message: str):
         """Provide audio and text feedback to the user."""
+        if self.mode == "speech":
+            # No real-time feedback in speech mode
+            return
         print(f"💬 FEEDBACK: {message}")
-        
         # Use TTS in a separate thread to avoid blocking
         if self.tts_available:
             def speak():
@@ -341,10 +468,29 @@ class SpeechCoach:
                     self.tts_engine.runAndWait()
                 except Exception as e:
                     print(f"⚠️  TTS error: {e}")
-            
             tts_thread = threading.Thread(target=speak)
             tts_thread.daemon = True
             tts_thread.start()
+        # Speech-based grading
+        if self.mode == "speech" and self.reference_text:
+            print("\n📝 Speech Comparison:")
+            user_text = " ".join(self.transcript)
+            import difflib
+            sm = difflib.SequenceMatcher(None, self.reference_text.split(), user_text.split())
+            match = sm.ratio()
+            print(f"✅ Speech Match: {match*100:.1f}%")
+            # Show missing/extra words (optional, simple diff)
+            ref_words = set(self.reference_text.split())
+            user_words = set(user_text.split())
+            missing = ref_words - user_words
+            extra = user_words - ref_words
+            print(f"❌ Missing words: {', '.join(list(missing)[:10])}{'...' if len(missing)>10 else ''}")
+            print(f"➕ Extra words: {', '.join(list(extra)[:10])}{'...' if len(extra)>10 else ''}")
+            # Suggest corrections
+            if match < 0.9:
+                print("💡 Suggestion: Practice reading the speech aloud, focusing on accuracy and pacing.")
+            else:
+                print("🎉 Great job! Your recitation closely matches the reference.")
     
     def _print_live_metrics(self):
         """Print live metrics for debugging."""

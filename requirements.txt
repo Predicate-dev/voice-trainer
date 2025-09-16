@@ -2,3 +2,5 @@ SpeechRecognition>=3.10.0
 PyAudio>=0.2.11
 pyttsx3>=2.90
 numpy>=1.21.0
+openai-whisper
+soundfile
