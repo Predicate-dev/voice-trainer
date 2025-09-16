@@ -33,7 +33,20 @@ import select
 import tempfile
 import os
 
+
 class SpeechCoach:
+    def _print_ascii_bar(self, values, label, width=40, char='#'):
+        """Print a simple ASCII bar graph for a list of values."""
+        if not values:
+            print(f" {label}: No data")
+            return
+        import numpy as np
+        min_v, max_v = np.min(values), np.max(values)
+        rng = max_v - min_v if max_v > min_v else 1
+        scaled = [int((v - min_v) / rng * width) for v in values]
+        print(f" {label} (min={min_v:.2f}, max={max_v:.2f}):")
+        for i, val in enumerate(scaled):
+            print(f"  {str(i+1).rjust(3)} | {char * val}")
 
     """Real-time speech analysis and coaching system with start/pause/stop triggers, session review, and two modes."""
 
@@ -103,10 +116,21 @@ class SpeechCoach:
         self.last_tone_feedback = 0
         self.feedback_cooldown = 5  # seconds
 
+        # Rhythm and pausing analysis
+        self.pause_durations = []  # List of detected pauses (seconds)
+        self.long_pause_count = 0
+        self.irregular_rhythm_count = 0
+        self.pause_threshold = 1.2  # seconds (customizable)
+        self.irregular_rhythm_threshold = 0.7  # stddev of pause durations (seconds)
+
         # Filler word detection
         self.filler_words = ["um", "uh", "like", "you know", "so", "actually", "basically", "literally", "right", "okay", "well"]
         self.filler_word_counts = {}
         self.filler_word_total = 0
+
+        # Emotion and expressiveness analysis
+        self.emotion_score = 0
+        self.emotion_label = ""
         
     def start(self):
         """Start the speech coaching session with keyboard triggers."""
@@ -190,10 +214,23 @@ class SpeechCoach:
         print("\n Transcribing with Whisper (this may take a moment)...")
         import whisper
         model = whisper.load_model("base")
-        result = model.transcribe(self.audio_record_path)
+        result = model.transcribe(self.audio_record_path, word_timestamps=True, verbose=False)
         # result["text"] is always a string
         self.transcript_text = str(result["text"]) if result["text"] is not None else ""
         self.transcript = self.transcript_text.split() if self.transcript_text else []
+        # Pronunciation feedback: collect low-confidence words
+        self.mispronounced_words = []
+        if "segments" in result:
+            for seg in result["segments"]:
+                if isinstance(seg, dict):
+                    words = seg.get("words", [])
+                    if isinstance(words, list):
+                        for w in words:
+                            # Defensive: Only process if w is a dict (not str)
+                            if isinstance(w, dict):
+                                # Whisper confidence is 0-1, flag low confidence
+                                if w.get("confidence", 1.0) < 0.85:
+                                    self.mispronounced_words.append(w.get("word", ""))
         print(" Whisper transcript:")
         print(self.transcript_text)
         # Filler word detection on transcript
@@ -300,6 +337,13 @@ class SpeechCoach:
                         current_time = time.time()
                         self.word_timestamps.append((current_time, word_count))
                         self.total_words += word_count
+                        # Rhythm and pausing analysis: detect pauses between utterances
+                        if hasattr(self, "_last_word_time"):
+                            pause = current_time - self._last_word_time
+                            self.pause_durations.append(pause)
+                            if pause > self.pause_threshold:
+                                self.long_pause_count += 1
+                        self._last_word_time = current_time
                         if self.mode == "freestyle":
                             print(f"📝 Recognized: {text}")
                         elif self.mode == "speech":
@@ -332,12 +376,42 @@ class SpeechCoach:
                 # Analyze tone (pitch variation) (only if PyAudio available)
                 if PYAUDIO_AVAILABLE:
                     self._analyze_tone()
+                # Analyze emotion/expressiveness (pitch/volume stats)
+                self._analyze_emotion()
                 # Print live metrics
                 self._print_live_metrics()
                 time.sleep(1)
             except Exception as e:
                 print(f" Analysis error: {e}")
                 time.sleep(1)
+
+    def _analyze_emotion(self):
+        """Estimate emotional tone using pitch and volume stats."""
+        # Only analyze if enough data
+        if not self.rms_values or not self.pitch_history:
+            self.emotion_score = 0
+            self.emotion_label = "Not enough data"
+            return
+        import numpy as np
+        pitch_sd = np.std(self.pitch_history)
+        volume_sd = np.std(self.rms_values)
+        avg_pitch = np.mean(self.pitch_history)
+        avg_volume = np.mean(self.rms_values)
+        # Simple scoring: more variation = more expressive
+        expressiveness = pitch_sd + volume_sd
+        self.emotion_score = expressiveness
+        # Heuristic emotion label
+        if expressiveness > 0.15:
+            if avg_pitch > 0.1 and avg_volume > 0.05:
+                self.emotion_label = "Excited/Expressive"
+            else:
+                self.emotion_label = "Expressive"
+        elif expressiveness > 0.08:
+            self.emotion_label = "Conversational"
+        elif expressiveness > 0.04:
+            self.emotion_label = "Calm/Flat"
+        else:
+            self.emotion_label = "Monotone/Low energy"
     
     def _analyze_volume(self):
         """Analyze volume and provide feedback if too quiet."""
@@ -423,17 +497,51 @@ class SpeechCoach:
         # Volume stats
         if self.rms_values:
             print(f" Volume (RMS): avg={np.mean(self.rms_values):.4f} min={np.min(self.rms_values):.4f} max={np.max(self.rms_values):.4f} sd={np.std(self.rms_values):.4f}")
+            self._print_ascii_bar(self.rms_values[-20:], "Volume", char='=')
         print(f" Low Volume Alerts: {self.low_volume_count}")
         print(f" Loud Volume Alerts: {self.loud_volume_count}")
         # Pitch stats
         if self.pitch_history:
             print(f" Pitch (ZCR): avg={np.mean(self.pitch_history):.4f} min={np.min(self.pitch_history):.4f} max={np.max(self.pitch_history):.4f} sd={np.std(self.pitch_history):.4f}")
+            self._print_ascii_bar(self.pitch_history[-20:], "Pitch", char='~')
+        # WPM bar graph (last 20 WPM samples)
+        if len(self.word_timestamps) > 2:
+            wpm_samples = []
+            for i in range(1, min(21, len(self.word_timestamps))):
+                t0, _ = self.word_timestamps[i-1]
+                t1, wc = self.word_timestamps[i]
+                dt = t1 - t0
+                if dt > 0:
+                    wpm = (wc / dt) * 60
+                    wpm_samples.append(wpm)
+            if wpm_samples:
+                self._print_ascii_bar(wpm_samples, "WPM", char='|')
         print(f" Monotone Alerts: {self.monotone_count}")
         # Vibe/prosody score (simple: higher pitch/volume SD = more expressive)
         vibe_score = 0
         if self.rms_values and self.pitch_history:
             vibe_score = (np.std(self.rms_values) + np.std(self.pitch_history)) * 50
             print(f" Vibe/Prosody Score: {vibe_score:.1f} (higher = more expressive)")
+        # Emotion/expressiveness
+        print("=" * 40)
+        print(" Emotion & Expressiveness:")
+        print(f"  Estimated: {self.emotion_label}")
+        print(f"  Expressiveness Score: {self.emotion_score:.3f}")
+        # Rhythm and pausing analysis
+        print("=" * 40)
+        print(" Rhythm & Pausing:")
+        if self.pause_durations:
+            avg_pause = np.mean(self.pause_durations)
+            std_pause = np.std(self.pause_durations)
+            print(f"  Avg Pause: {avg_pause:.2f}s | Stddev: {std_pause:.2f}s")
+            print(f"  Long Pauses (> {self.pause_threshold:.1f}s): {self.long_pause_count}")
+            if std_pause > self.irregular_rhythm_threshold:
+                print("  Rhythm: Irregular (try to keep a more even pace)")
+                self.irregular_rhythm_count += 1
+            else:
+                print("  Rhythm: Even/regular")
+        else:
+            print("  Not enough data for rhythm analysis.")
         # Filler word stats
         print("=" * 40)
         print(" Filler Words:")
@@ -444,6 +552,16 @@ class SpeechCoach:
             print("  Try to reduce filler words for a more confident delivery!")
         else:
             print("  No filler words detected. Great job!")
+        # Pronunciation feedback
+        print("=" * 40)
+        print(" Pronunciation Feedback:")
+        if hasattr(self, "mispronounced_words") and self.mispronounced_words:
+            unique_mispronounced = list(set(self.mispronounced_words))
+            print(f"  Mispronounced/unclear words detected: {len(self.mispronounced_words)}")
+            print(f"   Words: {', '.join(unique_mispronounced[:10])}{'...' if len(unique_mispronounced) > 10 else ''}")
+            print("  Try to pronounce these words more clearly in your next attempt!")
+        else:
+            print("  No major pronunciation issues detected.")
         print("=" * 40)
 
         # Speech-based grading and transcript
@@ -462,7 +580,16 @@ class SpeechCoach:
                     else:
                         text = re.sub(rf'\b{re.escape(word)}\b', repl, text, flags=re.IGNORECASE)
                 return text
-            print(highlight_filler(user_text, self.filler_words))
+            # Highlight mispronounced words as well
+            def highlight_pronunciation(text, mispronounced):
+                import re
+                for word in set(mispronounced):
+                    text = re.sub(rf'\b{re.escape(word)}\b', lambda m: f"{{{m.group(0).upper()}}}", text, flags=re.IGNORECASE)
+                return text
+            highlighted = highlight_filler(user_text, self.filler_words)
+            if hasattr(self, "mispronounced_words") and self.mispronounced_words:
+                highlighted = highlight_pronunciation(highlighted, self.mispronounced_words)
+            print(highlighted)
             print("\n Reference Speech:")
             print(self.reference_text)
             print("\n Detailed Comparison:")
