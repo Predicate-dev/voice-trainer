@@ -9,6 +9,7 @@ from speech_coach import SpeechCoach
 
 
 def main():
+    
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
         description="Voice Trainer - Real-time speech coaching system",
@@ -20,6 +21,20 @@ def main():
         choices=["freestyle", "speech"],
         default="freestyle",
         help="Mode: 'freestyle' for live feedback, 'speech' for speech-based grading."
+    )
+    
+    parser.add_argument(
+        "--feedback",
+        type=str,
+        default="all",
+        help="Comma-separated list of feedback types to enable (e.g. pacing,volume,tone,filler,pronunciation,emotion,visual). Use 'all' for everything."
+    )
+
+    parser.add_argument(
+        "--language",
+        type=str,
+        default="en",
+        help="Language code for Whisper transcription (default: en)"
     )
 
     parser.add_argument(
@@ -73,6 +88,11 @@ def main():
 
     # Create and configure speech coach
     coach = SpeechCoach(mode=args.mode, reference_text=reference_text)
+    # Pass feedback options and language to coach if supported
+    if hasattr(coach, 'set_feedback_options'):
+        coach.set_feedback_options(args.feedback)
+    if hasattr(coach, 'set_language'):
+        coach.set_language(args.language)
     coach.wpm_threshold = args.wpm_threshold
     coach.volume_threshold = args.volume_threshold
     coach.pitch_variation_threshold = args.pitch_threshold

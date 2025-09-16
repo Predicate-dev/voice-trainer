@@ -35,18 +35,7 @@ import os
 
 
 class SpeechCoach:
-    def _print_ascii_bar(self, values, label, width=40, char='#'):
-        """Print a simple ASCII bar graph for a list of values."""
-        if not values:
-            print(f" {label}: No data")
-            return
-        import numpy as np
-        min_v, max_v = np.min(values), np.max(values)
-        rng = max_v - min_v if max_v > min_v else 1
-        scaled = [int((v - min_v) / rng * width) for v in values]
-        print(f" {label} (min={min_v:.2f}, max={max_v:.2f}):")
-        for i, val in enumerate(scaled):
-            print(f"  {str(i+1).rjust(3)} | {char * val}")
+    
 
     """Real-time speech analysis and coaching system with start/pause/stop triggers, session review, and two modes."""
 
@@ -110,6 +99,9 @@ class SpeechCoach:
         self.pitch_history = []  # Store all pitch (ZCR) values for session
         self.loud_threshold = 0.2  # RMS threshold for too loud (customizable)
 
+        # Feedback options
+        self.enabled_feedback = {"pacing", "volume", "tone", "filler", "pronunciation", "emotion", "visual"}
+        self.language = "en"
         # Feedback cooldowns (prevent spam)
         self.last_pacing_feedback = 0
         self.last_volume_feedback = 0
@@ -412,6 +404,30 @@ class SpeechCoach:
             self.emotion_label = "Calm/Flat"
         else:
             self.emotion_label = "Monotone/Low energy"
+    
+    def set_feedback_options(self, feedback_str):
+        """Set which feedback types are enabled (comma-separated string or 'all')."""
+        all_types = {"pacing", "volume", "tone", "filler", "pronunciation", "emotion", "visual"}
+        if feedback_str.strip().lower() == "all":
+            self.enabled_feedback = all_types
+        else:
+            self.enabled_feedback = set(x.strip().lower() for x in feedback_str.split(",") if x.strip()) & all_types
+
+    def set_language(self, lang_code):
+        """Set language code for Whisper transcription."""
+        self.language = lang_code
+    def _print_ascii_bar(self, values, label, width=40, char='#'):
+        """Print a simple ASCII bar graph for a list of values."""
+        if not values:
+            print(f" {label}: No data")
+            return
+        import numpy as np
+        min_v, max_v = np.min(values), np.max(values)
+        rng = max_v - min_v if max_v > min_v else 1
+        scaled = [int((v - min_v) / rng * width) for v in values]
+        print(f" {label} (min={min_v:.2f}, max={max_v:.2f}):")
+        for i, val in enumerate(scaled):
+            print(f"  {str(i+1).rjust(3)} | {char * val}")
     
     def _analyze_volume(self):
         """Analyze volume and provide feedback if too quiet."""
