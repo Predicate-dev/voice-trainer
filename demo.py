@@ -20,6 +20,8 @@ def demo_speech_coach():
     print("   • Volume level monitoring") 
     print("   • Pitch variation analysis")
     print("   • Intelligent feedback system")
+    print("   • Keyboard controls: [r] Start, [p] Pause/Resume, [s] Stop")
+    print("   • Session review at the end")
     print()
     
     # Create coach instance
@@ -70,6 +72,9 @@ def demo_speech_coach():
     print("   Basic usage:")
     print("   $ python main.py")
     print()
+    print("   Controls during session:")
+    print("   [r] Start  [p] Pause/Resume  [s] Stop  [Ctrl+C] Quit")
+    print()
     print("   With custom thresholds:")
     print("   $ python main.py --wpm-threshold 150 --volume-threshold 0.02")
     print()
@@ -99,6 +104,8 @@ def demo_speech_coach():
     
     print("✨ Demo completed! Try running the actual coach with:")
     print("   python main.py")
+    print()
+    print("📝 At the end of your session, you'll see a SESSION REVIEW summarizing your performance!")
 
 
 if __name__ == "__main__":

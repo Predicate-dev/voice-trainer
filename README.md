@@ -9,6 +9,8 @@ A Python command-line speech coaching system that provides real-time feedback on
 - **Tone Analysis**: Analyzes pitch variation and provides feedback if speech is monotonous
 - **Real-time Feedback**: Provides both audio and visual feedback during speech
 - **Live Metrics**: Displays debugging metrics for volume, WPM, and pitch variation
+- **Keyboard Controls**: Start, pause/resume, and stop your session with keys ([r] Start, [p] Pause/Resume, [s] Stop)
+- **Session Review**: Get a summary of your session (duration, words, alerts) at the end
 
 ## Installation
 
@@ -63,6 +65,12 @@ voice-trainer/
    ```bash
    python main.py
    ```
+   
+   **Controls during session:**
+   - [r] Start
+   - [p] Pause/Resume
+   - [s] Stop (shows session review)
+   - [Ctrl+C] Quit
 
 ### Basic Usage
 ```bash
@@ -86,11 +94,13 @@ python speech_coach.py
    - Speaking pace (words per minute)
    - Volume levels (RMS calculation)
    - Pitch variation (tone analysis)
-3. **Feedback**: Provides immediate feedback when thresholds are exceeded:
+3. **Session Controls**: Use keyboard keys to start, pause, resume, or stop your session at any time.
+4. **Feedback**: Provides immediate feedback when thresholds are exceeded:
    - "Slow down!" if speaking too fast (default: >180 WPM)
    - "Project your voice!" if speaking too quietly
    - "Vary your pitch!" if speech is monotonous
-4. **Live Metrics**: Displays current metrics for debugging and monitoring
+5. **Live Metrics**: Displays current metrics for debugging and monitoring
+6. **Session Review**: When you stop, a summary is shown: duration, total words, max/min WPM, and alert counts.
 
 ## Configuration
 

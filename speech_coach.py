@@ -25,8 +25,13 @@ from collections import deque
 from typing import Optional, List, Tuple
 
 
+import threading
+import sys
+import time
+import select
+
 class SpeechCoach:
-    """Real-time speech analysis and coaching system."""
+    """Real-time speech analysis and coaching system with start/pause/stop triggers and session review."""
     
     def __init__(self):
         # Speech recognition setup
@@ -37,7 +42,7 @@ class SpeechCoach:
         except Exception as e:
             print(f"⚠️  Microphone not available: {e}")
             self.microphone_available = False
-        
+
         # Text-to-speech setup
         try:
             self.tts_engine = pyttsx3.init()
@@ -46,27 +51,39 @@ class SpeechCoach:
         except Exception as e:
             print(f"⚠️  TTS not available: {e}")
             self.tts_available = False
-        
+
         # Audio analysis parameters
         self.sample_rate = 16000
         self.chunk_size = 1024
         self.channels = 1
-        
+
         # Thresholds for feedback
         self.wpm_threshold = 180  # Words per minute threshold
         self.volume_threshold = 0.01  # RMS threshold for volume
         self.pitch_variation_threshold = 0.2  # Minimum pitch variation
-        
+
         # Analysis state
         self.audio_buffer = deque(maxlen=50)  # Keep last 50 audio chunks
         self.word_timestamps = deque(maxlen=20)  # Keep last 20 word timestamps
         self.pitch_values = deque(maxlen=30)  # Keep last 30 pitch measurements
-        
+
         # Control flags
         self.running = False
+        self.paused = False
+        self.session_active = False
         self.audio_thread = None
         self.analysis_thread = None
-        
+        self.key_thread = None
+
+        # Session stats
+        self.session_start_time = None
+        self.session_end_time = None
+        self.total_words = 0
+        self.max_wpm = 0
+        self.min_wpm = float('inf')
+        self.low_volume_count = 0
+        self.monotone_count = 0
+
         # Feedback cooldowns (prevent spam)
         self.last_pacing_feedback = 0
         self.last_volume_feedback = 0
@@ -74,115 +91,134 @@ class SpeechCoach:
         self.feedback_cooldown = 5  # seconds
         
     def start(self):
-        """Start the speech coaching session."""
-        print("🎤 Speech Coach Starting...")
-        
+        """Start the speech coaching session with keyboard triggers."""
+        print("🎤 Speech Coach Ready!")
         if not self.microphone_available:
             print("❌ Cannot start: No microphone available")
             return
-        
         print("Calibrating microphone...")
-        
-        # Calibrate microphone
         with self.microphone as source:
             self.recognizer.adjust_for_ambient_noise(source, duration=2)
-        
         print("✅ Calibration complete!")
-        print("🗣️  Start speaking. Press Ctrl+C to stop.")
-        if PYAUDIO_AVAILABLE:
-            print("📊 Full analysis mode: Pacing + Volume + Tone")
-        else:
-            print("📊 Limited analysis mode: Pacing only (install PyAudio for full features)")
+        print("Controls: [r] Start  [p] Pause/Resume  [s] Stop  [Ctrl+C] Quit")
         print("=" * 50)
-        
         self.running = True
-        
-        # Start audio capture thread only if PyAudio is available
+        self.paused = True
+        self.session_active = False
+        self.key_thread = threading.Thread(target=self._key_listener)
+        self.key_thread.daemon = True
+        self.key_thread.start()
         if PYAUDIO_AVAILABLE:
             self.audio_thread = threading.Thread(target=self._audio_capture_loop)
             self.audio_thread.daemon = True
             self.audio_thread.start()
-        
-        # Start analysis thread
         self.analysis_thread = threading.Thread(target=self._analysis_loop)
         self.analysis_thread.daemon = True
         self.analysis_thread.start()
-        
-        # Start speech recognition loop in main thread
         self._speech_recognition_loop()
     
     def stop(self):
-        """Stop the speech coaching session."""
+        """Stop the speech coaching session and print review."""
         print("\n🛑 Stopping Speech Coach...")
         self.running = False
+        self.paused = True
+        self.session_active = False
         if self.audio_thread:
             self.audio_thread.join(timeout=1)
         if self.analysis_thread:
             self.analysis_thread.join(timeout=1)
+        import threading
+        if self.key_thread and threading.current_thread() != self.key_thread:
+            self.key_thread.join(timeout=1)
+        self.session_end_time = time.time()
         print("✅ Speech Coach stopped.")
+        self._print_session_review()
+
+    def _key_listener(self):
+        """Listen for keyboard input to control start/pause/stop."""
+        while self.running:
+            if sys.platform == 'win32':
+                import msvcrt
+                if msvcrt.kbhit():
+                    key = msvcrt.getch().decode('utf-8').lower()
+                    self._handle_key(key)
+            else:
+                # Unix: use select for non-blocking stdin
+                dr, _, _ = select.select([sys.stdin], [], [], 0.1)
+                if dr:
+                    key = sys.stdin.read(1).lower()
+                    self._handle_key(key)
+            time.sleep(0.05)
+
+    def _handle_key(self, key):
+        if key == 'r':
+            if not self.session_active:
+                print("▶️  Session started!")
+                self.session_active = True
+                self.paused = False
+                self.session_start_time = time.time()
+            elif self.paused:
+                print("▶️  Resumed.")
+                self.paused = False
+        elif key == 'p':
+            if self.session_active and not self.paused:
+                print("⏸️  Paused.")
+                self.paused = True
+        elif key == 's':
+            print("🛑 Stop key pressed.")
+            self.stop()
     
     def _audio_capture_loop(self):
         """Capture audio for real-time analysis."""
         if not PYAUDIO_AVAILABLE:
             return
-            
-        # Setup PyAudio
-        p = pyaudio.PyAudio()
-        
+        import pyaudio as _pyaudio
+        p = _pyaudio.PyAudio()
+        stream = None
         try:
             stream = p.open(
-                format=pyaudio.paFloat32,
+                format=_pyaudio.paFloat32,
                 channels=self.channels,
                 rate=self.sample_rate,
                 input=True,
                 frames_per_buffer=self.chunk_size
             )
-            
             while self.running:
                 try:
-                    # Read audio data
                     data = stream.read(self.chunk_size, exception_on_overflow=False)
                     audio_data = np.frombuffer(data, dtype=np.float32)
-                    
-                    # Store in buffer for analysis
                     self.audio_buffer.append(audio_data)
-                    
                 except Exception as e:
                     print(f"⚠️  Audio capture error: {e}")
                     break
-                    
         finally:
-            stream.stop_stream()
-            stream.close()
+            if stream is not None:
+                stream.stop_stream()
+                stream.close()
             p.terminate()
     
     def _speech_recognition_loop(self):
         """Continuous speech recognition for WPM calculation."""
         while self.running:
+            if not self.session_active or self.paused:
+                time.sleep(0.1)
+                continue
             try:
                 with self.microphone as source:
-                    # Listen for audio with timeout
                     audio = self.recognizer.listen(source, timeout=1, phrase_time_limit=3)
-                
                 try:
-                    # Recognize speech
                     text = self.recognizer.recognize_google(audio)
                     if text.strip():
-                        # Record word timestamp for WPM calculation
                         word_count = len(text.split())
                         current_time = time.time()
                         self.word_timestamps.append((current_time, word_count))
-                        
+                        self.total_words += word_count
                         print(f"📝 Recognized: {text}")
-                        
                 except sr.UnknownValueError:
-                    # No speech detected, continue
                     pass
                 except sr.RequestError as e:
                     print(f"⚠️  Speech recognition error: {e}")
-                    
             except sr.WaitTimeoutError:
-                # Timeout is expected, continue listening
                 pass
             except KeyboardInterrupt:
                 break
@@ -193,25 +229,22 @@ class SpeechCoach:
     def _analysis_loop(self):
         """Continuous analysis of speech metrics."""
         while self.running:
+            if not self.session_active or self.paused:
+                time.sleep(0.1)
+                continue
             try:
                 current_time = time.time()
-                
                 # Analyze volume (only if PyAudio available)
                 if PYAUDIO_AVAILABLE:
                     self._analyze_volume()
-                
                 # Analyze pacing (WPM)
                 self._analyze_pacing(current_time)
-                
                 # Analyze tone (pitch variation) (only if PyAudio available)
                 if PYAUDIO_AVAILABLE:
                     self._analyze_tone()
-                
                 # Print live metrics
                 self._print_live_metrics()
-                
-                time.sleep(1)  # Analyze every second
-                
+                time.sleep(1)
             except Exception as e:
                 print(f"⚠️  Analysis error: {e}")
                 time.sleep(1)
@@ -229,7 +262,7 @@ class SpeechCoach:
         current_time = time.time()
         if (rms < self.volume_threshold and 
             current_time - self.last_volume_feedback > self.feedback_cooldown):
-            
+            self.low_volume_count += 1
             self._provide_feedback("🔊 Project your voice! Your volume is too low.")
             self.last_volume_feedback = current_time
     
@@ -245,14 +278,13 @@ class SpeechCoach:
         if len(recent_words) >= 2:
             total_words = sum(word_count for _, word_count in recent_words)
             time_span = recent_words[-1][0] - recent_words[0][0]
-            
             if time_span > 0:
                 wpm = (total_words / time_span) * 60
-                
+                self.max_wpm = max(self.max_wpm, wpm)
+                self.min_wpm = min(self.min_wpm, wpm)
                 # Check if speaking too fast
                 if (wpm > self.wpm_threshold and 
                     current_time - self.last_pacing_feedback > self.feedback_cooldown):
-                    
                     self._provide_feedback(f"🐌 Slow down! You're speaking at {wpm:.0f} WPM.")
                     self.last_pacing_feedback = current_time
     
@@ -277,9 +309,25 @@ class SpeechCoach:
             current_time = time.time()
             if (pitch_std < self.pitch_variation_threshold and 
                 current_time - self.last_tone_feedback > self.feedback_cooldown):
-                
+                self.monotone_count += 1
                 self._provide_feedback("🎵 Vary your pitch! Your speech sounds monotonous.")
                 self.last_tone_feedback = current_time
+    def _print_session_review(self):
+        """Print a summary review of the session."""
+        if not self.session_start_time or not self.session_end_time:
+            print("No session data to review.")
+            return
+        duration = self.session_end_time - self.session_start_time
+        print("\n📋 SESSION REVIEW")
+        print("=" * 40)
+        print(f"🕒 Duration: {duration:.1f} seconds")
+        print(f"📝 Total Words: {self.total_words}")
+        if self.max_wpm != float('-inf') and self.min_wpm != float('inf'):
+            print(f"📈 Max WPM: {self.max_wpm:.1f}")
+            print(f"📉 Min WPM: {self.min_wpm:.1f}")
+        print(f"🔊 Low Volume Alerts: {self.low_volume_count}")
+        print(f"🎵 Monotone Alerts: {self.monotone_count}")
+        print("=" * 40)
     
     def _provide_feedback(self, message: str):
         """Provide audio and text feedback to the user."""
