@@ -126,8 +126,8 @@ class SpeechCoach:
         self.emotion_score = 0
         self.emotion_label = ""
         
-    def start(self):
-        """Start the speech coaching session with keyboard triggers."""
+    def start(self, gui_mode=False):
+        """Start the speech coaching session. If gui_mode, start immediately and skip keyboard triggers."""
         print("🎤 Speech Coach Ready!")
         if not self.microphone_available:
             print(" Cannot start: No microphone available")
@@ -136,14 +136,20 @@ class SpeechCoach:
         with self.microphone as source:
             self.recognizer.adjust_for_ambient_noise(source, duration=2)
         print(" Calibration complete!")
-        print("Controls: [r] Start  [p] Pause/Resume  [s] Stop  [Ctrl+C] Quit")
-        print("=" * 50)
         self.running = True
-        self.paused = True
-        self.session_active = False
-        self.key_thread = threading.Thread(target=self._key_listener)
-        self.key_thread.daemon = True
-        self.key_thread.start()
+        if gui_mode:
+            self.paused = False
+            self.session_active = True
+            self.session_start_time = time.time()
+        else:
+            self.paused = True
+            self.session_active = False
+        if not gui_mode:
+            print("Controls: [r] Start  [p] Pause/Resume  [s] Stop  [Ctrl+C] Quit")
+            print("=" * 50)
+            self.key_thread = threading.Thread(target=self._key_listener)
+            self.key_thread.daemon = True
+            self.key_thread.start()
         if self.mode == "speech":
             # Prepare temp WAV file for recording
             self.audio_record_path = tempfile.mktemp(suffix=".wav")

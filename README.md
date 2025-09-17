@@ -154,3 +154,25 @@ You can adjust the feedback thresholds:
 - Speaking rhythm analysis
 - Web-based interface
 - Training session recording and playback
+
+## Desktop App (PyQt5)
+
+You can now use Speech Coach as a desktop app with a graphical interface!
+
+### How to Run
+
+1. Make sure you have all dependencies installed:
+   ```sh
+   pip install -r requirements.txt
+   pip install PyQt5
+   ```
+2. Run the app:
+   ```sh
+   python speech_coach_app.py
+   ```
+
+### Features
+- Start/stop a speech coaching session with buttons
+- Live WPM and volume display
+- Session review and feedback in a scrollable window
+- All advanced analytics and advice from the CLI version
