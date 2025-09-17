@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+import os
+os.environ["NUMBA_THREADING_LAYER"] = "tbb"
 """
 Speech Coach PoC - Real-time speech analysis and feedback system.
 
@@ -497,32 +499,52 @@ class SpeechCoach:
                 self._provide_feedback("🎵 Vary your pitch! Your speech sounds monotonous.")
                 self.last_tone_feedback = current_time
     def _print_session_review(self):
-        """Print a detailed summary review of the session, including transcript and speech comparison in speech mode."""
+        """Print a visually improved, detailed summary review of the session, with color, clearer sections, and key stats."""
         import numpy as np
+        import sys
+        # Color helpers (ANSI)
+        def color(text, code):
+            if sys.stdout.isatty():
+                return f"\033[{code}m{text}\033[0m"
+            return text
+        BOLD = '1'
+        RED = '31;1'
+        GREEN = '32;1'
+        YELLOW = '33;1'
+        BLUE = '34;1'
+        CYAN = '36;1'
+        MAGENTA = '35;1'
+        GREY = '90'
+
         if not self.session_start_time or not self.session_end_time:
-            print("No session data to review.")
+            print(color("No session data to review.", RED))
             return
         duration = self.session_end_time - self.session_start_time
-        print("\n SESSION REVIEW")
-        print("=" * 40)
-        print(f" Duration: {duration:.1f} seconds")
-        print(f" Total Words: {self.total_words}")
+        print("\n" + color("╔══════════════════════════════════════════════╗", CYAN))
+        print(color("║           SESSION REVIEW DASHBOARD           ║", CYAN))
+        print(color("╚══════════════════════════════════════════════╝", CYAN))
+        print(color(f"Duration: {duration:.1f} seconds", BOLD))
+        print(color(f"Total Words: {self.total_words}", BOLD))
         if self.max_wpm != float('-inf') and self.min_wpm != float('inf'):
-            print(f" Max WPM: {self.max_wpm:.1f}")
-            print(f" Min WPM: {self.min_wpm:.1f}")
+            print(color(f"Max WPM: {self.max_wpm:.1f}", YELLOW))
+            print(color(f"Min WPM: {self.min_wpm:.1f}", YELLOW))
         # Volume stats
         if self.rms_values:
-            print(f" Volume (RMS): avg={np.mean(self.rms_values):.4f} min={np.min(self.rms_values):.4f} max={np.max(self.rms_values):.4f} sd={np.std(self.rms_values):.4f}")
-            self._print_ascii_bar(self.rms_values[-20:], "Volume", char='=')
-        print(f" Low Volume Alerts: {self.low_volume_count}")
-        print(f" Loud Volume Alerts: {self.loud_volume_count}")
+            print(color(f"Volume (RMS): avg={np.mean(self.rms_values):.4f} min={np.min(self.rms_values):.4f} max={np.max(self.rms_values):.4f} sd={np.std(self.rms_values):.4f}", BLUE))
+            self._print_ascii_bar(self.rms_values[-20:], color("Volume", BLUE), char='=')
+        print(color(f"Low Volume Alerts: {self.low_volume_count}", RED if self.low_volume_count else GREEN))
+        print(color(f"Loud Volume Alerts: {self.loud_volume_count}", RED if self.loud_volume_count else GREEN))
         # Pitch stats
         if self.pitch_history:
-            print(f" Pitch (ZCR): avg={np.mean(self.pitch_history):.4f} min={np.min(self.pitch_history):.4f} max={np.max(self.pitch_history):.4f} sd={np.std(self.pitch_history):.4f}")
-            self._print_ascii_bar(self.pitch_history[-20:], "Pitch", char='~')
-        # WPM bar graph (last 20 WPM samples)
+            print(color(f"Pitch (ZCR): avg={np.mean(self.pitch_history):.4f} min={np.min(self.pitch_history):.4f} max={np.max(self.pitch_history):.4f} sd={np.std(self.pitch_history):.4f}", MAGENTA))
+            self._print_ascii_bar(self.pitch_history[-20:], color("Pitch", MAGENTA), char='~')
+        # WPM bar graph (last 20 WPM samples) and highlight fast/slow segments
+        fast_segments = []
+        slow_segments = []
+        wpm_samples = []
+        wpm_threshold = self.wpm_threshold
+        slow_threshold = max(80, wpm_threshold * 0.5)  # Customizable lower bound
         if len(self.word_timestamps) > 2:
-            wpm_samples = []
             for i in range(1, min(21, len(self.word_timestamps))):
                 t0, _ = self.word_timestamps[i-1]
                 t1, wc = self.word_timestamps[i]
@@ -530,69 +552,136 @@ class SpeechCoach:
                 if dt > 0:
                     wpm = (wc / dt) * 60
                     wpm_samples.append(wpm)
+                    if wpm > wpm_threshold:
+                        fast_segments.append(i)
+                    elif wpm < slow_threshold:
+                        slow_segments.append(i)
             if wpm_samples:
-                self._print_ascii_bar(wpm_samples, "WPM", char='|')
-        print(f" Monotone Alerts: {self.monotone_count}")
+                # Print WPM bar with fast/slow highlights
+                bar = []
+                for idx, wpm in enumerate(wpm_samples):
+                    if wpm > wpm_threshold:
+                        bar.append(color('|', RED))
+                    elif wpm < slow_threshold:
+                        bar.append(color('|', BLUE))
+                    else:
+                        bar.append(color('|', YELLOW))
+                print(f" {color('WPM', YELLOW)}: " + ''.join(bar) + f"  (Red=fast, Blue=slow, Yellow=ok)")
+                # Also print numeric values for context
+                print("  WPM values:", ' '.join([f"{int(w)}" for w in wpm_samples]))
+                if fast_segments:
+                    print(color(f"  ⚠️  Fast segments: {', '.join(str(i+1) for i in fast_segments)} (WPM > {wpm_threshold})", RED))
+                if slow_segments:
+                    print(color(f"  🐢 Slow segments: {', '.join(str(i+1) for i in slow_segments)} (WPM < {slow_threshold})", BLUE))
+                if not fast_segments and not slow_segments:
+                    print(color("  ✅ All segments within optimal pace!", GREEN))
+        print(color(f"Monotone Alerts: {self.monotone_count}", RED if self.monotone_count else GREEN))
         # Vibe/prosody score (simple: higher pitch/volume SD = more expressive)
         vibe_score = 0
         if self.rms_values and self.pitch_history:
             vibe_score = (np.std(self.rms_values) + np.std(self.pitch_history)) * 50
-            print(f" Vibe/Prosody Score: {vibe_score:.1f} (higher = more expressive)")
+            print(color(f"Vibe/Prosody Score: {vibe_score:.1f} (higher = more expressive)", CYAN))
+
+        # Actionable advice section
+        print(color("\n╔══════════════════════════════════════════════╗", CYAN))
+        print(color("║            ACTIONABLE ADVICE                ║", CYAN))
+        print(color("╚══════════════════════════════════════════════╝", CYAN))
+        # Pacing advice
+        if 'wpm_samples' in locals() and wpm_samples:
+            fast_count = sum(w > wpm_threshold for w in wpm_samples)
+            slow_count = sum(w < slow_threshold for w in wpm_samples)
+            if fast_count > 0:
+                print(color(f"- Pacing: You spoke too fast in {fast_count} segment(s). Try to pause more and slow down for clarity.", RED))
+            if slow_count > 0:
+                print(color(f"- Pacing: You spoke too slowly in {slow_count} segment(s). Try to keep a steady, energetic pace.", BLUE))
+            if fast_count == 0 and slow_count == 0:
+                print(color("- Pacing: Great pacing throughout your speech!", GREEN))
+        # Volume advice
+        if self.low_volume_count > 0:
+            print(color(f"- Volume: Your volume was too low at times. Practice projecting your voice and speaking from your diaphragm.", RED))
+        if self.loud_volume_count > 0:
+            print(color(f"- Volume: You were too loud at times. Try to moderate your volume for a more pleasant delivery.", YELLOW))
+        if self.low_volume_count == 0 and self.loud_volume_count == 0:
+            print(color("- Volume: Excellent volume control!", GREEN))
+        # Tone advice
+        if self.monotone_count > 0:
+            print(color(f"- Tone: Your speech was monotonous at times. Add more pitch variation and emotion for engagement.", RED))
+        else:
+            print(color("- Tone: Good pitch variation and expressiveness!", GREEN))
+        # Rhythm advice
+        if self.pause_durations:
+            std_pause = np.std(self.pause_durations)
+            if std_pause > self.irregular_rhythm_threshold:
+                print(color("- Rhythm: Your rhythm was irregular. Practice pausing at natural points and keeping a steady flow.", RED))
+            else:
+                print(color("- Rhythm: Good, even rhythm!", GREEN))
+        # Filler word advice
+        if self.filler_word_total > 0:
+            print(color(f"- Filler Words: Try to reduce filler words like {', '.join(list(self.filler_word_counts.keys())[:3])}. Pause briefly instead of using fillers.", YELLOW))
+        else:
+            print(color("- Filler Words: No filler words detected. Excellent!", GREEN))
+        # Pronunciation advice
+        if hasattr(self, "mispronounced_words") and self.mispronounced_words:
+            print(color(f"- Pronunciation: Work on clearly pronouncing words like {', '.join(list(set(self.mispronounced_words))[:3])}.", RED))
+        else:
+            print(color("- Pronunciation: No major issues detected!", GREEN))
         # Emotion/expressiveness
-        print("=" * 40)
-        print(" Emotion & Expressiveness:")
-        print(f"  Estimated: {self.emotion_label}")
-        print(f"  Expressiveness Score: {self.emotion_score:.3f}")
+        print(color("\n╔══════════════════════════════════════════════╗", CYAN))
+        print(color("║         EMOTION & EXPRESSIVENESS            ║", CYAN))
+        print(color("╚══════════════════════════════════════════════╝", CYAN))
+        print(color(f"Estimated: {self.emotion_label}", BOLD))
+        print(color(f"Expressiveness Score: {self.emotion_score:.3f}", CYAN))
         # Rhythm and pausing analysis
-        print("=" * 40)
-        print(" Rhythm & Pausing:")
+        print(color("\n╔══════════════════════════════════════════════╗", CYAN))
+        print(color("║            RHYTHM & PAUSING                 ║", CYAN))
+        print(color("╚══════════════════════════════════════════════╝", CYAN))
         if self.pause_durations:
             avg_pause = np.mean(self.pause_durations)
             std_pause = np.std(self.pause_durations)
-            print(f"  Avg Pause: {avg_pause:.2f}s | Stddev: {std_pause:.2f}s")
-            print(f"  Long Pauses (> {self.pause_threshold:.1f}s): {self.long_pause_count}")
+            print(color(f"Avg Pause: {avg_pause:.2f}s | Stddev: {std_pause:.2f}s", BOLD))
+            print(color(f"Long Pauses (> {self.pause_threshold:.1f}s): {self.long_pause_count}", RED if self.long_pause_count else GREEN))
             if std_pause > self.irregular_rhythm_threshold:
-                print("  Rhythm: Irregular (try to keep a more even pace)")
+                print(color("Rhythm: Irregular (try to keep a more even pace)", RED))
                 self.irregular_rhythm_count += 1
             else:
-                print("  Rhythm: Even/regular")
+                print(color("Rhythm: Even/regular", GREEN))
         else:
-            print("  Not enough data for rhythm analysis.")
+            print(color("Not enough data for rhythm analysis.", GREY))
         # Filler word stats
-        print("=" * 40)
-        print(" Filler Words:")
+        print(color("\n╔══════════════════════════════════════════════╗", CYAN))
+        print(color("║               FILLER WORDS                  ║", CYAN))
+        print(color("╚══════════════════════════════════════════════╝", CYAN))
         if self.filler_word_total > 0:
-            print(f"  Total Filler Words: {self.filler_word_total}")
+            print(color(f"Total Filler Words: {self.filler_word_total}", YELLOW))
             for word, count in self.filler_word_counts.items():
-                print(f"   - {word}: {count}")
-            print("  Try to reduce filler words for a more confident delivery!")
+                print(color(f" - {word}: {count}", YELLOW))
+            print(color("Try to reduce filler words for a more confident delivery!", RED))
         else:
-            print("  No filler words detected. Great job!")
+            print(color("No filler words detected. Great job!", GREEN))
         # Pronunciation feedback
-        print("=" * 40)
-        print(" Pronunciation Feedback:")
+        print(color("\n╔══════════════════════════════════════════════╗", CYAN))
+        print(color("║         PRONUNCIATION FEEDBACK              ║", CYAN))
+        print(color("╚══════════════════════════════════════════════╝", CYAN))
         if hasattr(self, "mispronounced_words") and self.mispronounced_words:
             unique_mispronounced = list(set(self.mispronounced_words))
-            print(f"  Mispronounced/unclear words detected: {len(self.mispronounced_words)}")
-            print(f"   Words: {', '.join(unique_mispronounced[:10])}{'...' if len(unique_mispronounced) > 10 else ''}")
-            print("  Try to pronounce these words more clearly in your next attempt!")
+            print(color(f"Mispronounced/unclear words detected: {len(self.mispronounced_words)}", RED))
+            print(color(f" Words: {', '.join(unique_mispronounced[:10])}{'...' if len(unique_mispronounced) > 10 else ''}", RED))
+            print(color("Try to pronounce these words more clearly in your next attempt!", RED))
         else:
-            print("  No major pronunciation issues detected.")
-        print("=" * 40)
-
+            print(color("No major pronunciation issues detected.", GREEN))
         # Speech-based grading and transcript
         if self.mode == "speech" and self.reference_text:
             import difflib
             user_text = getattr(self, "transcript_text", " ".join(self.transcript))
-            print("\n Full Transcript (Whisper):")
+            print(color("\nFull Transcript (Whisper):", BOLD))
             # Highlight filler words in transcript
             def highlight_filler(text, filler_words):
                 import re
                 def repl(match):
-                    return f"[{match.group(0).upper()}]"
+                    return color(f"[{match.group(0).upper()}]", YELLOW)
                 for word in filler_words:
                     if " " in word:
-                        text = text.replace(word, f"[{word.upper()}]")
+                        text = text.replace(word, color(f"[{word.upper()}]", YELLOW))
                     else:
                         text = re.sub(rf'\b{re.escape(word)}\b', repl, text, flags=re.IGNORECASE)
                 return text
@@ -600,15 +689,15 @@ class SpeechCoach:
             def highlight_pronunciation(text, mispronounced):
                 import re
                 for word in set(mispronounced):
-                    text = re.sub(rf'\b{re.escape(word)}\b', lambda m: f"{{{m.group(0).upper()}}}", text, flags=re.IGNORECASE)
+                    text = re.sub(rf'\b{re.escape(word)}\b', lambda m: color(f"{{{m.group(0).upper()}}}", RED), text, flags=re.IGNORECASE)
                 return text
             highlighted = highlight_filler(user_text, self.filler_words)
             if hasattr(self, "mispronounced_words") and self.mispronounced_words:
                 highlighted = highlight_pronunciation(highlighted, self.mispronounced_words)
             print(highlighted)
-            print("\n Reference Speech:")
+            print(color("\nReference Speech:", BOLD))
             print(self.reference_text)
-            print("\n Detailed Comparison:")
+            print(color("\nDetailed Comparison:", BOLD))
             # Word-level diff
             ref_words = self.reference_text.split()
             user_words = user_text.split()
@@ -630,23 +719,21 @@ class SpeechCoach:
                 elif tag == 'insert':
                     mistakes.append(f"Extra: '{' '.join(user_words[j1:j2])}'")
             accuracy = accuracy_count / max(1, total)
-            print(f"\n Accuracy: {accuracy*100:.1f}%")
+            print(color(f"\nAccuracy: {accuracy*100:.1f}%", BOLD))
             if mistakes:
-                print("\n Mistakes:")
-                for m in mistakes: # Can be long, so limit output?
-                    print(f"- {m}")
-                # if len(mistakes) > 10:
-                #     print(f"...and {len(mistakes)-10} more.")
+                print(color("\nMistakes:", RED))
+                for m in mistakes:
+                    print(color(f"- {m}", RED))
             else:
-                print(" No mistakes detected!")
+                print(color("No mistakes detected!", GREEN))
             # Text summary
-            print("\n Summary:")
+            print(color("\nSummary:", BOLD))
             if accuracy > 0.95:
-                print("Excellent! Your recitation was very accurate. Keep practicing for even more fluency.")
+                print(color("Excellent! Your recitation was very accurate. Keep practicing for even more fluency.", GREEN))
             elif accuracy > 0.8:
-                print("Good job! Review the mistakes above and try to reduce them in your next attempt.")
+                print(color("Good job! Review the mistakes above and try to reduce them in your next attempt.", YELLOW))
             else:
-                print("Needs improvement. Focus on reading carefully and matching the reference speech word for word.")
+                print(color("Needs improvement. Focus on reading carefully and matching the reference speech word for word.", RED))
     
     def _provide_feedback(self, message: str):
         """Provide audio and text feedback to the user."""
