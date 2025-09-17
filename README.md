@@ -176,3 +176,28 @@ You can now use Speech Coach as a desktop app with a graphical interface!
 - Live WPM and volume display
 - Session review and feedback in a scrollable window
 - All advanced analytics and advice from the CLI version
+
+## Vosk Integration (Offline, Real-Time Recognition)
+
+- The app now uses [Vosk](https://alphacephei.com/vosk/) for fast, offline, real-time speech recognition.
+- No internet connection or Google API required.
+- Download the English model from https://alphacephei.com/vosk/models and unzip it to `vosk-model/vosk-model-small-en-us-0.15`.
+- Vosk is used for all real-time feedback and live transcription in both CLI and GUI modes.
+
+### How to Set Up Vosk
+
+1. Download the model:
+   - [vosk-model-small-en-us-0.15.zip](https://alphacephei.com/vosk/models)
+2. Unzip it into the `vosk-model` directory:
+   ```sh
+   unzip vosk-model/vosk-model-small-en-us-0.15.zip -d vosk-model/
+   ```
+3. Install the Python package:
+   ```sh
+   pip install vosk
+   ```
+
+### Why Vosk?
+- Fully offline, fast, and accurate for real-time feedback
+- No privacy concerns or API limits
+- Works on macOS, Linux, and Windows
