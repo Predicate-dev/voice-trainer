@@ -115,15 +115,21 @@ class SpeechCoachApp(QWidget):
         self.session_thread.start()
         self.timer.start(1000)
 
-    def run_coach_gui(self):
+    def run_coach_gui(self) -> None:
         try:
-            self.coach.start(gui_mode=True)
+                if self.coach is not None:
+                    self.coach.start(gui_mode=True)
+                else:
+                    self.status_label.setText("Error: SpeechCoach is not initialized.")
         except Exception as e:
             self.status_label.setText(f"Error: {e}")
 
     def run_coach(self):
         try:
-            self.coach.start()
+                if self.coach is not None:
+                    self.coach.start()
+                else:
+                    self.status_label.setText("Error: SpeechCoach is not initialized.")
         except Exception as e:
             self.status_label.setText(f"Error: {e}")
 

@@ -322,17 +322,37 @@ class SpeechCoach:
             p.terminate()
     
     def _speech_recognition_loop(self):
-        """Continuous speech recognition for WPM calculation."""
+        """Continuous speech recognition for WPM calculation using Vosk."""
+        try:
+            from vosk import Model, KaldiRecognizer
+            import pyaudio
+            import json
+        except ImportError:
+            print("Vosk is not installed. Please install it with pip install vosk.")
+            return
+        model_path = "vosk-model/vosk-model-small-en-us-0.15"
+        if not os.path.exists(model_path):
+            print(f"Vosk model not found at {model_path}. Please download and unzip the model.")
+            return
+        model = Model(model_path)
+        recognizer = KaldiRecognizer(model, self.sample_rate)
+        recognizer.SetWords(True)
+        p = pyaudio.PyAudio()
+        stream = p.open(format=pyaudio.paInt16, channels=1, rate=self.sample_rate, input=True, frames_per_buffer=self.chunk_size)
+        stream.start_stream()
+        buffer = b''
         while self.running:
             if not self.session_active or self.paused:
                 time.sleep(0.1)
                 continue
             try:
-                with self.microphone as source:
-                    audio = self.recognizer.listen(source, timeout=1, phrase_time_limit=3)
-                try:
-                    text = self.recognizer.recognize_google(audio)
-                    if text.strip():
+                data = stream.read(self.chunk_size, exception_on_overflow=False)
+                buffer += data
+                if recognizer.AcceptWaveform(data):
+                    result = recognizer.Result()
+                    result_json = json.loads(result)
+                    text = result_json.get('text', '').strip()
+                    if text:
                         word_count = len(text.split())
                         current_time = time.time()
                         self.word_timestamps.append((current_time, word_count))
@@ -348,17 +368,12 @@ class SpeechCoach:
                             print(f"📝 Recognized: {text}")
                         elif self.mode == "speech":
                             self.transcript.append(text)
-                except sr.UnknownValueError:
-                    pass
-                except sr.RequestError as e:
-                    print(f" Speech recognition error: {e}")
-            except sr.WaitTimeoutError:
-                pass
-            except KeyboardInterrupt:
-                break
             except Exception as e:
-                print(f" Recognition loop error: {e}")
+                print(f" Vosk recognition loop error: {e}")
                 time.sleep(0.1)
+        stream.stop_stream()
+        stream.close()
+        p.terminate()
     
     def _analysis_loop(self):
         """Continuous analysis of speech metrics."""
