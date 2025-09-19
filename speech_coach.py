@@ -341,19 +341,43 @@ class SpeechCoach:
         stream = p.open(format=pyaudio.paInt16, channels=1, rate=self.sample_rate, input=True, frames_per_buffer=self.chunk_size)
         stream.start_stream()
         buffer = b''
+        partial_transcript = []
         while self.running:
             if not self.session_active or self.paused:
                 time.sleep(0.1)
                 continue
             try:
                 data = stream.read(self.chunk_size, exception_on_overflow=False)
+                # Feed audio to analysis buffer for volume/pitch
+                audio_np = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
+                self.audio_buffer.append(audio_np)
                 buffer += data
+                # Process partial results for live transcript and word count
+                partial = recognizer.PartialResult()
+                partial_json = json.loads(partial)
+                partial_text = partial_json.get('partial', '').strip()
+                if partial_text:
+                    words = partial_text.split()
+                    # Only add new words
+                    new_words = [w for w in words if w not in partial_transcript]
+                    if new_words:
+                        partial_transcript.extend(new_words)
+                        word_count = len(new_words)
+                        current_time = time.time()
+                        self.word_timestamps.append((current_time, word_count))
+                        self.total_words += word_count
+                        if self.mode == "freestyle":
+                            print(f"📝 Partial: {' '.join(new_words)}")
+                        elif self.mode == "speech":
+                            self.transcript.extend(new_words)
+                # Process final results for completed phrases
                 if recognizer.AcceptWaveform(data):
                     result = recognizer.Result()
                     result_json = json.loads(result)
                     text = result_json.get('text', '').strip()
                     if text:
-                        word_count = len(text.split())
+                        words = text.split()
+                        word_count = len(words)
                         current_time = time.time()
                         self.word_timestamps.append((current_time, word_count))
                         self.total_words += word_count
@@ -367,7 +391,7 @@ class SpeechCoach:
                         if self.mode == "freestyle":
                             print(f"📝 Recognized: {text}")
                         elif self.mode == "speech":
-                            self.transcript.append(text)
+                            self.transcript.extend(words)
             except Exception as e:
                 print(f" Vosk recognition loop error: {e}")
                 time.sleep(0.1)

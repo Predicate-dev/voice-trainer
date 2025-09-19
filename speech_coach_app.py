@@ -117,19 +117,19 @@ class SpeechCoachApp(QWidget):
 
     def run_coach_gui(self) -> None:
         try:
-                if self.coach is not None:
-                    self.coach.start(gui_mode=True)
-                else:
-                    self.status_label.setText("Error: SpeechCoach is not initialized.")
+            if self.coach is not None:
+                self.coach.start(gui_mode=True)
+            else:
+                self.status_label.setText("Error: SpeechCoach is not initialized.")
         except Exception as e:
             self.status_label.setText(f"Error: {e}")
 
     def run_coach(self):
         try:
-                if self.coach is not None:
-                    self.coach.start()
-                else:
-                    self.status_label.setText("Error: SpeechCoach is not initialized.")
+            if self.coach is not None:
+                self.coach.start()
+            else:
+                self.status_label.setText("Error: SpeechCoach is not initialized.")
         except Exception as e:
             self.status_label.setText(f"Error: {e}")
 
@@ -184,7 +184,25 @@ class SpeechCoachApp(QWidget):
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
                 self.coach._print_session_review()
-            self.review_box.setPlainText(buf.getvalue())
+            text = buf.getvalue()
+            # Simple color scheme: blue for headers, green for good, red for alerts, yellow for warnings
+            import re
+            html = text
+            # Section headers
+            html = re.sub(r'(╔[═]+╗)', r'<br><span style="color:#1976d2;font-weight:bold;">[0m\1</span>', html)
+            html = re.sub(r'(║[\sA-Z&]+║)', r'<span style="color:#1976d2;font-weight:bold;">[0m\1</span>', html)
+            html = re.sub(r'(╚[═]+╝)', r'<span style="color:#1976d2;font-weight:bold;">[0m\1</span><br>', html)
+            # Good/positive
+            html = re.sub(r'(Excellent|Great job|No filler words detected|No major issues detected|Good pitch variation|Good, even rhythm|Excellent volume control|No mistakes detected)', r'<span style="color:#388e3c;font-weight:bold;">\1</span>', html, flags=re.IGNORECASE)
+            # Alerts/negative
+            html = re.sub(r'(Too low|Too loud|monotonous|Irregular|Try to|Missing|Incorrect|Needs improvement|Fast segments|Slow segments|Pronounce|Mistakes:)', r'<span style="color:#d32f2f;font-weight:bold;">\1</span>', html, flags=re.IGNORECASE)
+            # Warnings/neutral
+            html = re.sub(r'(Good job|Review the mistakes|Summary:|Accuracy:)', r'<span style="color:#fbc02d;font-weight:bold;">\1</span>', html, flags=re.IGNORECASE)
+            # Remove ANSI codes if present
+            html = re.sub(r'\u001b\[[0-9;]*m', '', html)
+            # Replace newlines with <br>
+            html = html.replace('\n', '<br>')
+            self.review_box.setHtml(f'<pre style="font-family:monospace;">{html}</pre>')
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
