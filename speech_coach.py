@@ -25,6 +25,8 @@ import time
 import sys
 from collections import deque
 from typing import Optional, List, Tuple
+import soundfile as sf
+import pyaudio
 
 
 import threading
@@ -37,6 +39,57 @@ import os
 
 
 class SpeechCoach:
+    # Baseline and adaptive goals
+    baseline_file = "user_baseline.json"
+
+    def compute_baseline(self):
+        """Compute baseline metrics from the last session."""
+        import numpy as np
+        baseline = {
+            "avg_wpm": np.mean([w for _, w in self.word_timestamps]) if self.word_timestamps else 0,
+            "avg_volume": np.mean(self.rms_values) if self.rms_values else 0,
+            "avg_pitch_var": np.std(self.pitch_history) if self.pitch_history else 0,
+            "filler_rate": self.filler_word_total / max(1, self.total_words),
+            "session_count": 1
+        }
+        return baseline
+
+    def save_baseline(self, baseline):
+        import json
+        # If file exists, average with previous baseline
+        try:
+            with open(self.baseline_file, "r") as f:
+                prev = json.load(f)
+            # Running average for each metric
+            for k in ["avg_wpm", "avg_volume", "avg_pitch_var", "filler_rate"]:
+                prev[k] = (prev[k] * prev["session_count"] + baseline[k]) / (prev["session_count"] + 1)
+            prev["session_count"] += 1
+            baseline = prev
+        except Exception:
+            pass
+        with open(self.baseline_file, "w") as f:
+            json.dump(baseline, f, indent=2)
+
+    def load_baseline(self):
+        import json
+        try:
+            with open(self.baseline_file, "r") as f:
+                return json.load(f)
+        except Exception:
+            return None
+
+    def update_goals_from_baseline(self):
+        """Set adaptive thresholds based on user baseline."""
+        baseline = self.load_baseline()
+        if not baseline:
+            return
+        # Example: set goals to +10% of baseline (or other heuristics)
+        self.wpm_threshold = max(100, baseline["avg_wpm"] * 1.1)
+        self.volume_threshold = max(0.005, baseline["avg_volume"] * 1.1)
+        self.pitch_variation_threshold = max(0.05, baseline["avg_pitch_var"] * 1.2)
+        # Optionally, set other goals (e.g., reduce filler rate)
+        self.filler_rate_goal = max(0.01, baseline["filler_rate"] * 0.8)
+
     
 
     """Real-time speech analysis and coaching system with start/pause/stop triggers, session review, and two modes."""
@@ -127,6 +180,8 @@ class SpeechCoach:
         self.emotion_label = ""
         
     def start(self, gui_mode=False):
+        # Load adaptive goals before session
+        self.update_goals_from_baseline()
         """Start the speech coaching session. If gui_mode, start immediately and skip keyboard triggers."""
         print("🎤 Speech Coach Ready!")
         if not self.microphone_available:
@@ -167,8 +222,7 @@ class SpeechCoach:
 
     def _record_audio_wav(self):
         """Record the session to a WAV file for Whisper transcription (speech mode only)."""
-        import soundfile as sf
-        import pyaudio
+        
         p = pyaudio.PyAudio()
         stream = p.open(format=pyaudio.paInt16, channels=1, rate=16000, input=True, frames_per_buffer=1024)
         frames = []
@@ -199,6 +253,9 @@ class SpeechCoach:
             self.key_thread.join(timeout=1)
         self.session_end_time = time.time()
         print("✅ Speech Coach stopped.")
+        # After session, compute and save baseline
+        baseline = self.compute_baseline()
+        self.save_baseline(baseline)
         # If in speech mode, transcribe with Whisper before review
         if self.mode == "speech" and self.audio_record_path:
             self._whisper_transcribe()

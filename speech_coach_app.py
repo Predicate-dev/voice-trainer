@@ -1,11 +1,22 @@
 import sys
+import os
+import threading
+import time
+import tempfile
+import io
+import contextlib
+import re
+
+import soundfile
+import numpy as np
+import pyttsx3
+
 from PyQt5.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QPushButton, QLabel, QTextEdit, QHBoxLayout, QProgressBar, QFileDialog
+    QApplication, QWidget, QVBoxLayout, QPushButton, QLabel, QTextEdit, QHBoxLayout, QProgressBar, QFileDialog, QComboBox, QCheckBox, QSlider
 )
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QFont
-import threading
-import time
+from PyQt5.QtMultimedia import QSound
 
 from speech_coach import SpeechCoach
 
@@ -28,8 +39,7 @@ class SpeechCoachApp(QWidget):
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
 
-        # Options: Mode, Reference Speech, Recording, and direct input
-        from PyQt5.QtWidgets import QComboBox, QCheckBox, QTextEdit
+    # Options: Mode, Reference Speech, Recording, and direct input
         options_layout = QHBoxLayout()
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(["freestyle", "speech"])
@@ -79,6 +89,36 @@ class SpeechCoachApp(QWidget):
 
         self.reference_text = None
 
+        tts_layout = QHBoxLayout()
+        tts_layout.addWidget(QLabel("TTS Speed:"))
+        self.tts_speed = QSlider(Qt.Horizontal)
+        self.tts_speed.setMinimum(100)
+        self.tts_speed.setMaximum(300)
+        self.tts_speed.setValue(200)
+        self.tts_speed.setTickInterval(10)
+        self.tts_speed.setTickPosition(QSlider.TicksBelow)
+        tts_layout.addWidget(self.tts_speed)
+        tts_layout.addWidget(QLabel("TTS Volume:"))
+        self.tts_volume = QSlider(Qt.Horizontal)
+        self.tts_volume.setMinimum(0)
+        self.tts_volume.setMaximum(100)
+        self.tts_volume.setValue(80)
+        self.tts_volume.setTickInterval(10)
+        self.tts_volume.setTickPosition(QSlider.TicksBelow)
+        tts_layout.addWidget(self.tts_volume)
+        tts_layout.addWidget(QLabel("TTS Pitch:"))
+        self.tts_pitch = QSlider(Qt.Horizontal)
+        self.tts_pitch.setMinimum(50)
+        self.tts_pitch.setMaximum(200)
+        self.tts_pitch.setValue(100)
+        self.tts_pitch.setTickInterval(10)
+        self.tts_pitch.setTickPosition(QSlider.TicksBelow)
+        tts_layout.addWidget(self.tts_pitch)
+        self.preview_btn = QPushButton("Preview Model Speech")
+        self.preview_btn.clicked.connect(self.preview_model_speech)
+        tts_layout.addWidget(self.preview_btn)
+        layout.addLayout(tts_layout)
+
     def select_reference(self):
         fname, _ = QFileDialog.getOpenFileName(self, "Select Reference Speech", "", "Text Files (*.txt);;All Files (*)")
         if fname:
@@ -109,12 +149,13 @@ class SpeechCoachApp(QWidget):
         # Pass mode, reference, and recording option to SpeechCoach
         self.coach = SpeechCoach(mode=mode, reference_text=reference)
         self._live_transcript = []
-        # Always record in speech mode for GUI (let user ignore file if not needed)
+        # Always create the thread before setting daemon/start
         self.session_thread = threading.Thread(target=self.run_coach_gui)
-        self.session_thread.daemon = True
-        self.session_thread.start()
+        if self.session_thread is not None:
+            self.session_thread.daemon = True
+            self.session_thread.start()
         self.timer.start(1000)
-
+    
     def run_coach_gui(self) -> None:
         try:
             if self.coach is not None:
@@ -123,6 +164,77 @@ class SpeechCoachApp(QWidget):
                 self.status_label.setText("Error: SpeechCoach is not initialized.")
         except Exception as e:
             self.status_label.setText(f"Error: {e}")
+
+    def preview_model_speech(self):
+        """Synthesize and play the input speech with selected TTS parameters, saving to WAV and playing with sounddevice."""
+        import pyttsx3
+        import tempfile
+        import os
+        import platform
+        import soundfile as sf
+        import sounddevice as sd
+        text = self.speech_input.toPlainText().strip()
+        if not text:
+            self.status_label.setText("Please enter or paste a speech to preview.")
+            return
+        engine = pyttsx3.init()
+        engine.setProperty('rate', self.tts_speed.value())
+        engine.setProperty('volume', self.tts_volume.value() / 100.0)
+        # Select a male voice if available
+        voices = engine.getProperty('voices')
+        male_voice_id = None
+        # Try to iterate voices, else print debug info
+        # Use the user-specified voice
+        engine.setProperty('voice', 'com.apple.speech.synthesis.voice.Cellos')
+
+        print("[DEBUG] Listing available voices:")
+        try:
+            voices = engine.getProperty('voices')
+            if hasattr(voices, '__iter__') and not isinstance(voices, str):
+                for v in voices:
+                    print(f"Voice ID: {getattr(v, 'id', v)} | Name: {getattr(v, 'name', '?')} | Gender: {getattr(v, 'gender', '?')} | Lang: {getattr(v, 'languages', '?')}")
+            else:
+                print(f"[DEBUG] voices is not iterable: type={type(voices)}, value={voices}")
+        except Exception as e:
+            print(f"[DEBUG] Error listing voices: {e}")
+        # Only set pitch if not on macOS (NSSS does not support pitch)
+        if platform.system() != 'Darwin':
+            try:
+                engine.setProperty('pitch', self.tts_pitch.value())
+            except Exception:
+                pass
+        # Save to temp WAV file
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tf:
+            wav_path = tf.name
+        engine.save_to_file(text, wav_path)
+        engine.runAndWait()
+        self.status_label.setText(f"Playing model speech at speed {self.tts_speed.value()}, volume {self.tts_volume.value()}, pitch {self.tts_pitch.value()}.")
+        # Play using sounddevice
+        try:
+            # Print available sound devices for debugging
+            devices = sd.query_devices()
+            print("Available sound devices:")
+            for idx, dev in enumerate(devices):
+                # Use attribute access (sounddevice returns namedtuple or similar)
+                name = getattr(dev, 'name', str(dev))
+                max_out = getattr(dev, 'max_output_channels', '?')
+                print(f"{idx}: {name} (output channels: {max_out})")
+            data, samplerate = sf.read(wav_path, dtype='float32')
+            if data is None or data.size == 0:
+                self.status_label.setText("TTS generated an empty or invalid audio file.")
+                print("[DEBUG] WAV file is empty or invalid.")
+            else:
+                print(f"[DEBUG] Playing audio: shape={data.shape}, samplerate={samplerate}")
+                sd.play(data, samplerate)
+                sd.wait()
+                self.status_label.setText("Model speech playback finished.")
+        except Exception as e:
+            self.status_label.setText(f"Audio playback error: {e}")
+            print(f"[DEBUG] Audio playback error: {e}")
+        try:
+            os.remove(wav_path)
+        except Exception:
+            pass
 
     def run_coach(self):
         try:
