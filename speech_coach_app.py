@@ -17,6 +17,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QFont
 from PyQt5.QtMultimedia import QSound
+import pyqtgraph as pg
 
 from speech_coach import SpeechCoach
 
@@ -80,6 +81,63 @@ class SpeechCoachApp(QWidget):
 
         self.live_metrics = QLabel("")
         layout.addWidget(self.live_metrics)
+
+        # Advanced DSP / Inference controls and live metric displays
+        dsp_layout = QHBoxLayout()
+        self.dsp_checkbox = QCheckBox("Enable Advanced DSP")
+        self.dsp_checkbox.setChecked(True)
+        dsp_layout.addWidget(self.dsp_checkbox)
+        self.inference_checkbox = QCheckBox("Enable Inference (model)")
+        self.inference_checkbox.setChecked(True)
+        dsp_layout.addWidget(self.inference_checkbox)
+        layout.addLayout(dsp_layout)
+        # Connect change signals so toggles apply at runtime
+        self.dsp_checkbox.stateChanged.connect(self._on_dsp_toggled)
+        self.inference_checkbox.stateChanged.connect(self._on_inference_toggled)
+
+        # Live DSP metric labels
+        metrics_layout = QHBoxLayout()
+        self.f0_label = QLabel("F0: N/A")
+        metrics_layout.addWidget(self.f0_label)
+        self.jitter_label = QLabel("Jitter: N/A")
+        metrics_layout.addWidget(self.jitter_label)
+        self.shimmer_label = QLabel("Shimmer: N/A")
+        metrics_layout.addWidget(self.shimmer_label)
+        self.hnr_label = QLabel("HNR: N/A")
+        metrics_layout.addWidget(self.hnr_label)
+        self.spec_label = QLabel("Centroid: N/A")
+        metrics_layout.addWidget(self.spec_label)
+        self.model_score_label = QLabel("Model: N/A")
+        metrics_layout.addWidget(self.model_score_label)
+        layout.addLayout(metrics_layout)
+
+        # Realtime sparkline plots (pyqtgraph)
+        plots_layout = QHBoxLayout()
+        # Each plot will display last N samples
+        self._plot_length = 100
+        self.f0_plot = pg.PlotWidget(title="F0 (Hz)")
+        self.f0_curve = self.f0_plot.plot(pen='c')
+        self.f0_plot.setFixedHeight(100)
+        plots_layout.addWidget(self.f0_plot)
+        self.jitter_plot = pg.PlotWidget(title="Jitter")
+        self.jitter_curve = self.jitter_plot.plot(pen='m')
+        self.jitter_plot.setFixedHeight(100)
+        plots_layout.addWidget(self.jitter_plot)
+        self.hnr_plot = pg.PlotWidget(title="HNR (dB)")
+        self.hnr_curve = self.hnr_plot.plot(pen='y')
+        self.hnr_plot.setFixedHeight(100)
+        plots_layout.addWidget(self.hnr_plot)
+        self.model_plot = pg.PlotWidget(title="Model Score")
+        self.model_curve = self.model_plot.plot(pen='g')
+        self.model_plot.setFixedHeight(100)
+        plots_layout.addWidget(self.model_plot)
+        layout.addLayout(plots_layout)
+
+        # Internal buffers for plotting
+        self._f0_buf = [0.0] * self._plot_length
+        self._jitter_buf = [0.0] * self._plot_length
+        self._hnr_buf = [0.0] * self._plot_length
+        self._model_buf = [None] * self._plot_length
 
         self.review_box = QTextEdit()
         self.review_box.setReadOnly(True)
@@ -148,6 +206,12 @@ class SpeechCoachApp(QWidget):
         self.session_active = True
         # Pass mode, reference, and recording option to SpeechCoach
         self.coach = SpeechCoach(mode=mode, reference_text=reference)
+        # Apply GUI-controlled toggles to the coach
+        try:
+            self.coach.enable_dsp = bool(self.dsp_checkbox.isChecked())
+            self.coach.enable_inference = bool(self.inference_checkbox.isChecked())
+        except Exception:
+            pass
         self._live_transcript = []
         # Always create the thread before setting daemon/start
         self.session_thread = threading.Thread(target=self.run_coach_gui)
@@ -155,6 +219,51 @@ class SpeechCoachApp(QWidget):
             self.session_thread.daemon = True
             self.session_thread.start()
         self.timer.start(1000)
+
+    def _on_dsp_toggled(self, state):
+        if not hasattr(self, 'coach') or self.coach is None:
+            return
+        try:
+            self.coach.enable_dsp = bool(state)
+            self.status_label.setText(f"Advanced DSP {'enabled' if state else 'disabled'}.")
+        except Exception as e:
+            print(f"Error toggling DSP: {e}")
+
+    def _on_inference_toggled(self, state):
+        if not hasattr(self, 'coach') or self.coach is None:
+            return
+        try:
+            enabled = bool(state)
+            # Update coach flag
+            self.coach.enable_inference = enabled
+            # Start inference worker if enabling and model present
+            if enabled:
+                if getattr(self.coach, 'mfcc_model', None) is None:
+                    self.status_label.setText("No MFCC model found; inference not started.")
+                    return
+                if not getattr(self.coach, 'inference_active', False):
+                    self.coach.inference_active = True
+                    self.coach.inference_thread = threading.Thread(target=self.coach._inference_worker)
+                    self.coach.inference_thread.daemon = True
+                    self.coach.inference_thread.start()
+                    self.status_label.setText("Inference worker started.")
+                else:
+                    self.status_label.setText("Inference already running.")
+            else:
+                # Disable inference worker
+                if getattr(self.coach, 'inference_active', False):
+                    self.coach.inference_active = False
+                    self.status_label.setText("Stopping inference worker...")
+                    # Best-effort join
+                    try:
+                        if getattr(self.coach, 'inference_thread', None):
+                            self.coach.inference_thread.join(timeout=0.5)
+                    except Exception:
+                        pass
+                    self.status_label.setText("Inference worker stopped.")
+        except Exception as e:
+            print(f"Error toggling inference: {e}")
+        # (session thread creation moved to start_session)
     
     def run_coach_gui(self) -> None:
         try:
@@ -275,6 +384,70 @@ class SpeechCoachApp(QWidget):
                     rms = np.sqrt(np.mean(recent_audio ** 2))
                 self.live_metrics.setText(f"Live WPM: {wpm:.0f} | Volume: {rms:.3f}")
                 self.progress.setValue(min(100, int(self.coach.total_words)))
+                # Update DSP metric labels (safe access)
+                try:
+                    f0 = self.coach.f0_history[-1] if getattr(self.coach, 'f0_history', None) else None
+                except Exception:
+                    f0 = None
+                try:
+                    jitter = self.coach.jitter_history[-1] if getattr(self.coach, 'jitter_history', None) else None
+                except Exception:
+                    jitter = None
+                try:
+                    shimmer = self.coach.shimmer_history[-1] if getattr(self.coach, 'shimmer_history', None) else None
+                except Exception:
+                    shimmer = None
+                try:
+                    hnr = self.coach.hnr_history[-1] if getattr(self.coach, 'hnr_history', None) else None
+                except Exception:
+                    hnr = None
+                try:
+                    centroid = self.coach.spectral_centroid_history[-1] if getattr(self.coach, 'spectral_centroid_history', None) else None
+                except Exception:
+                    centroid = None
+                try:
+                    model_score = self.coach.realtime_model_score if hasattr(self.coach, 'realtime_model_score') else None
+                except Exception:
+                    model_score = None
+                # Set labels
+                self.f0_label.setText(f"F0: {f0:.1f}" if f0 else "F0: N/A")
+                self.jitter_label.setText(f"Jitter: {jitter:.3f}" if jitter else "Jitter: N/A")
+                self.shimmer_label.setText(f"Shimmer: {shimmer:.3f}" if shimmer else "Shimmer: N/A")
+                self.hnr_label.setText(f"HNR: {hnr:.1f} dB" if hnr else "HNR: N/A")
+                self.spec_label.setText(f"Centroid: {centroid:.0f} Hz" if centroid else "Centroid: N/A")
+                self.model_score_label.setText(f"Model: {model_score:.2f}" if model_score is not None else "Model: N/A")
+                # Update plots buffers and curves
+                try:
+                    # F0
+                    if f0:
+                        self._f0_buf.append(float(f0))
+                    else:
+                        self._f0_buf.append(0.0)
+                    self._f0_buf = self._f0_buf[-self._plot_length:]
+                    self.f0_curve.setData(self._f0_buf)
+                    # Jitter
+                    if jitter:
+                        self._jitter_buf.append(float(jitter))
+                    else:
+                        self._jitter_buf.append(0.0)
+                    self._jitter_buf = self._jitter_buf[-self._plot_length:]
+                    self.jitter_curve.setData(self._jitter_buf)
+                    # HNR
+                    if hnr:
+                        self._hnr_buf.append(float(hnr))
+                    else:
+                        self._hnr_buf.append(0.0)
+                    self._hnr_buf = self._hnr_buf[-self._plot_length:]
+                    self.hnr_curve.setData(self._hnr_buf)
+                    # Model score
+                    if model_score is not None:
+                        self._model_buf.append(float(model_score))
+                    else:
+                        self._model_buf.append(0.0)
+                    self._model_buf = self._model_buf[-self._plot_length:]
+                    self.model_curve.setData([0.0 if v is None else v for v in self._model_buf])
+                except Exception:
+                    pass
                 # Show live transcript (for both modes)
                 transcript = None
                 if hasattr(self.coach, 'transcript') and self.coach.transcript:

@@ -36,6 +36,21 @@ import select
 
 import tempfile
 import os
+try:
+    import librosa
+    LIBROSA_AVAILABLE = True
+except Exception:
+    LIBROSA_AVAILABLE = False
+    librosa = None
+
+try:
+    import torch
+    TORCH_AVAILABLE = True
+except Exception:
+    TORCH_AVAILABLE = False
+    torch = None
+
+import scipy.signal as signal
 
 
 class SpeechCoach:
@@ -67,8 +82,29 @@ class SpeechCoach:
             baseline = prev
         except Exception:
             pass
+        # Ensure all values are plain Python types for JSON
+        def _to_json_safe(x):
+            try:
+                import numpy as _np
+                if isinstance(x, _np.floating):
+                    return float(x)
+                if isinstance(x, _np.integer):
+                    return int(x)
+            except Exception:
+                pass
+            if isinstance(x, float):
+                return float(x)
+            if isinstance(x, int):
+                return int(x)
+            if isinstance(x, dict):
+                return {k: _to_json_safe(v) for k, v in x.items()}
+            if isinstance(x, (list, tuple)):
+                return [_to_json_safe(v) for v in x]
+            return x
+
+        safe_baseline = _to_json_safe(baseline)
         with open(self.baseline_file, "w") as f:
-            json.dump(baseline, f, indent=2)
+            json.dump(safe_baseline, f, indent=2)
 
     def load_baseline(self):
         import json
@@ -152,6 +188,47 @@ class SpeechCoach:
         self.monotone_count = 0
         self.rms_values = []  # Store all RMS values for session
         self.pitch_history = []  # Store all pitch (ZCR) values for session
+        # DSP histories
+        self.f0_history = []
+        self.jitter_history = []
+        self.shimmer_history = []
+        self.hnr_history = []
+        self.mfcc_buffer = deque(maxlen=50)
+        self.realtime_model_score = None
+        # Spectral / FFT-based clarity metrics
+        self.spectral_centroid_history = []
+        self.spectral_flatness_history = []
+        self.harmonic_energy_ratio_history = []
+        # Locks for thread-safe access
+        self._mfcc_lock = threading.Lock()
+        self._score_lock = threading.Lock()
+
+        # Try to load a PyTorch model for MFCC time-series analysis if present
+        self.mfcc_model = None
+        self.mfcc_model_path = os.path.join("models", "mfcc_model.pt")
+        # Runtime toggles (can be controlled by GUI to reduce native/audio/model risk)
+        self.enable_dsp = True
+        self.enable_inference = True
+        if TORCH_AVAILABLE and os.path.exists(self.mfcc_model_path):
+            try:
+                # Prefer torch.jit for faster startup when available
+                try:
+                    self.mfcc_model = torch.jit.load(self.mfcc_model_path)
+                    print(f"Loaded MFCC model from {self.mfcc_model_path}")
+                except Exception:
+                    self.mfcc_model = torch.load(self.mfcc_model_path)
+                    print(f"Loaded MFCC model (torch.load) from {self.mfcc_model_path}")
+            except Exception as e:
+                print(f"⚠️  Failed to load MFCC model: {e}")
+        # Start lightweight inference worker for sub-100ms feedback if model loaded
+        self.inference_thread = None
+        self.inference_active = False
+        # Only start if model is present and inference is enabled
+        if self.mfcc_model is not None and self.enable_inference:
+            self.inference_active = True
+            self.inference_thread = threading.Thread(target=self._inference_worker)
+            self.inference_thread.daemon = True
+            self.inference_thread.start()
         self.loud_threshold = 0.2  # RMS threshold for too loud (customizable)
 
         # Feedback options
@@ -185,12 +262,21 @@ class SpeechCoach:
         """Start the speech coaching session. If gui_mode, start immediately and skip keyboard triggers."""
         print("🎤 Speech Coach Ready!")
         if not self.microphone_available:
-            print(" Cannot start: No microphone available")
-            return
-        print("Calibrating microphone...")
-        with self.microphone as source:
-            self.recognizer.adjust_for_ambient_noise(source, duration=2)
-        print(" Calibration complete!")
+            # Fallback: if PyAudio is available, continue using _audio_capture_loop instead
+            if PYAUDIO_AVAILABLE:
+                print("⚠️  speech_recognition Microphone not available; falling back to PyAudio capture.")
+            else:
+                print(" Cannot start: No microphone available and PyAudio not available.")
+                return
+        else:
+            # Only calibrate if we have an sr.Microphone source
+            try:
+                print("Calibrating microphone...")
+                with self.microphone as source:
+                    self.recognizer.adjust_for_ambient_noise(source, duration=2)
+                print(" Calibration complete!")
+            except Exception as e:
+                print(f"Microphone calibration failed, continuing if PyAudio is available: {e}")
         self.running = True
         if gui_mode:
             self.paused = False
@@ -211,13 +297,16 @@ class SpeechCoach:
             self.audio_thread = threading.Thread(target=self._record_audio_wav)
             self.audio_thread.daemon = True
             self.audio_thread.start()
+            print(f"[DEBUG] audio_thread started for speech mode, recording to {self.audio_record_path}")
         elif PYAUDIO_AVAILABLE:
             self.audio_thread = threading.Thread(target=self._audio_capture_loop)
             self.audio_thread.daemon = True
             self.audio_thread.start()
+            print("[DEBUG] audio_thread started using PyAudio capture")
         self.analysis_thread = threading.Thread(target=self._analysis_loop)
         self.analysis_thread.daemon = True
         self.analysis_thread.start()
+        print("[DEBUG] analysis_thread started")
         self._speech_recognition_loop()
 
     def _record_audio_wav(self):
@@ -226,9 +315,12 @@ class SpeechCoach:
         p = pyaudio.PyAudio()
         stream = p.open(format=pyaudio.paInt16, channels=1, rate=16000, input=True, frames_per_buffer=1024)
         frames = []
+        print("[DEBUG] Recording WAV thread active")
         while self.running:
             data = stream.read(1024, exception_on_overflow=False)
             frames.append(data)
+            if len(frames) % 50 == 0:
+                print(f"[DEBUG] recorded frames: {len(frames)}")
         stream.stop_stream()
         stream.close()
         p.terminate()
@@ -270,11 +362,85 @@ class SpeechCoach:
             return
         print("\n Transcribing with Whisper (this may take a moment)...")
         import whisper
-        model = whisper.load_model("base")
-        result = model.transcribe(self.audio_record_path, word_timestamps=True, verbose=False)
-        # result["text"] is always a string
-        self.transcript_text = str(result["text"]) if result["text"] is not None else ""
-        self.transcript = self.transcript_text.split() if self.transcript_text else []
+        try:
+            model = whisper.load_model("base")
+            result = model.transcribe(self.audio_record_path, word_timestamps=True, verbose=False)
+            # result["text"] is always a string
+            self.transcript_text = str(result["text"]) if result["text"] is not None else ""
+            self.transcript = self.transcript_text.split() if self.transcript_text else []
+        except FileNotFoundError as e:
+            # Often caused by missing ffmpeg executable used by whisper's audio loader
+            print(f"Whisper transcription skipped: external dependency missing: {e}")
+            # Try to fall back to Vosk (offline) if available and model exists
+            try:
+                from vosk import Model as VoskModel, KaldiRecognizer
+                import wave
+                import json
+                model_path = "vosk-model/vosk-model-small-en-us-0.15"
+                if os.path.exists(model_path):
+                    print("Attempting Vosk fallback transcription...")
+                    wf = wave.open(self.audio_record_path, "rb")
+                    if wf.getnchannels() != 1 or wf.getframerate() != 16000:
+                        # We expect 16k mono WAV; try to read and convert using soundfile if available
+                        try:
+                            import soundfile as sf
+                            data, sr = sf.read(self.audio_record_path)
+                            # Convert to mono if necessary
+                            if len(data.shape) > 1:
+                                data = data.mean(axis=1)
+                            # Resample if needed
+                            if sr != 16000:
+                                try:
+                                    import librosa
+                                    data = librosa.resample(data.astype('float32'), orig_sr=sr, target_sr=16000)
+                                except Exception:
+                                    pass
+                            # Write a temp 16k mono WAV for Vosk
+                            import tempfile
+                            temp_wav = tempfile.mktemp(suffix=".wav")
+                            sf.write(temp_wav, data, 16000)
+                            wf = wave.open(temp_wav, 'rb')
+                        except Exception:
+                            pass
+                    vosk_model = VoskModel(model_path)
+                    rec = KaldiRecognizer(vosk_model, 16000)
+                    rec.SetWords(True)
+                    results = []
+                    while True:
+                        data = wf.readframes(4000)
+                        if len(data) == 0:
+                            break
+                        if rec.AcceptWaveform(data):
+                            res = json.loads(rec.Result())
+                            results.append(res.get('text', ''))
+                    # final
+                    try:
+                        final_res = json.loads(rec.FinalResult())
+                        results.append(final_res.get('text', ''))
+                    except Exception:
+                        pass
+                    transcript_text = ' '.join([r for r in results if r])
+                    self.transcript_text = transcript_text
+                    self.transcript = transcript_text.split() if transcript_text else []
+                    print("Vosk fallback transcript:", self.transcript_text)
+                    try:
+                        wf.close()
+                    except Exception:
+                        pass
+                    return
+                else:
+                    print("Vosk model not found for fallback.")
+            except Exception as e2:
+                print(f"Vosk fallback failed: {e2}")
+            # If Vosk fallback didn't run, set empty transcript
+            self.transcript = []
+            self.transcript_text = ""
+            return
+        except Exception as e:
+            print(f"Whisper transcription failed: {e}")
+            self.transcript = []
+            self.transcript_text = ""
+            return
         # Pronunciation feedback: collect low-confidence words
         self.mispronounced_words = []
         if "segments" in result:
@@ -364,11 +530,14 @@ class SpeechCoach:
                 input=True,
                 frames_per_buffer=self.chunk_size
             )
+            print("[DEBUG] PyAudio stream opened for capture")
             while self.running:
                 try:
                     data = stream.read(self.chunk_size, exception_on_overflow=False)
                     audio_data = np.frombuffer(data, dtype=np.float32)
                     self.audio_buffer.append(audio_data)
+                    if len(self.audio_buffer) % 10 == 0:
+                        print(f"[DEBUG] audio_buffer length: {len(self.audio_buffer)}")
                 except Exception as e:
                     print(f" Audio capture error: {e}")
                     break
@@ -472,6 +641,9 @@ class SpeechCoach:
                 # Analyze tone (pitch variation) (only if PyAudio available)
                 if PYAUDIO_AVAILABLE:
                     self._analyze_tone()
+                # Advanced DSP analysis (F0, Jitter, Shimmer, HNR, MFCCs)
+                if PYAUDIO_AVAILABLE and getattr(self, 'enable_dsp', True):
+                    self._analyze_dsp()
                 # Analyze emotion/expressiveness (pitch/volume stats)
                 self._analyze_emotion()
                 # Print live metrics
@@ -480,6 +652,190 @@ class SpeechCoach:
             except Exception as e:
                 print(f" Analysis error: {e}")
                 time.sleep(1)
+
+    # --- DSP Utilities & Analysis ---
+    def _analyze_dsp(self):
+        """Compute F0, jitter, shimmer, HNR, and MFCCs from recent audio and optionally run model inference."""
+        if not self.audio_buffer:
+            return
+        # Use last ~0.2-0.5s of audio for stable DSP
+        sr = self.sample_rate
+        needed = int(0.25 * sr)
+        recent = np.concatenate(list(self.audio_buffer)[-10:])
+        if len(recent) < 1024:
+            return
+        # Take last 'needed' samples
+        audio = recent[-needed:]
+        # F0 estimation (autocorrelation)
+        f0 = self._estimate_f0_autocorr(audio, sr)
+        if f0 is not None:
+            self.f0_history.append(f0)
+        # HNR
+        hnr = self._estimate_hnr(audio)
+        if hnr is not None:
+            self.hnr_history.append(hnr)
+            # Provide feedback if HNR too low (noisy/hoarse)
+            if hnr < 15 and time.time() - self.last_tone_feedback > self.feedback_cooldown:
+                self._provide_feedback("🔎 Your voice has a hoarse/noisy quality (low HNR). Consider hydrating or warm-ups.")
+                self.last_tone_feedback = time.time()
+        # FFT-based spectral features for clarity
+        try:
+            sc = self._spectral_centroid(audio, sr)
+            if sc is not None:
+                self.spectral_centroid_history.append(sc)
+            sfm = self._spectral_flatness(audio)
+            if sfm is not None:
+                self.spectral_flatness_history.append(sfm)
+            her = self._harmonic_energy_ratio(audio, sr)
+            if her is not None:
+                self.harmonic_energy_ratio_history.append(her)
+                # Feedback if harmonic energy is low (indicates breathiness/noise)
+                if her < 0.2 and time.time() - self.last_tone_feedback > self.feedback_cooldown:
+                    self._provide_feedback("🔊 Low harmonic energy detected — speak more clearly and reduce breathiness.")
+                    self.last_tone_feedback = time.time()
+        except Exception as e:
+            print(f"DSP spectral feature error: {e}")
+
+        # Jitter & Shimmer (approximate from F0 and amplitude)
+        if len(self.f0_history) >= 3:
+            jitter = self._estimate_jitter(self.f0_history[-20:])
+            shimmer = self._estimate_shimmer(audio)
+            if jitter is not None:
+                self.jitter_history.append(jitter)
+            if shimmer is not None:
+                self.shimmer_history.append(shimmer)
+        # MFCC extraction
+        mfcc = self._compute_mfcc(audio, sr)
+        if mfcc is not None:
+            with self._mfcc_lock:
+                self.mfcc_buffer.append(mfcc)
+            # Run model inference if available and enough frames
+                # inference worker will pick this up
+                pass
+
+    def _estimate_f0_autocorr(self, audio: np.ndarray, sr: int, fmin=50, fmax=500):
+        """Estimate F0 using autocorrelation method."""
+        # Pre-emphasis
+        audio = signal.lfilter([1, -0.97], [1], audio)
+        # Windowing
+        win = np.hanning(len(audio))
+        x = audio * win
+        # Autocorrelation
+        corr = np.correlate(x, x, mode='full')
+        corr = corr[len(corr)//2:]
+        if np.all(corr == 0):
+            return None
+        # Find peak in lag range
+        min_lag = int(sr / fmax)
+        max_lag = int(sr / fmin)
+        if max_lag <= min_lag:
+            return None
+        segment = corr[min_lag:max_lag]
+        peak = np.argmax(segment) + min_lag
+        if corr[peak] <= 0:
+            return None
+        f0 = sr / peak
+        return float(f0)
+
+    def _estimate_hnr(self, audio: np.ndarray):
+        """Estimate Harmonics-to-Noise Ratio (HNR) via autocorrelation peak strength."""
+        try:
+            audio = audio - np.mean(audio)
+            corr = np.correlate(audio, audio, mode='full')
+            corr = corr[len(corr)//2:]
+            if len(corr) < 2:
+                return None
+            # Peak at lag 0 is energy; search next peak
+            peak0 = corr[0]
+            # find maximum autocorrelation after lag 0 within reasonable range
+            search = corr[1: int(len(corr)*0.5)]
+            peak1 = np.max(search) if len(search) > 0 else 0.0
+            # HNR in dB
+            if peak0 - peak1 <= 0:
+                return 0.0
+            hnr = 10 * np.log10((peak1) / (peak0 - peak1 + 1e-8) + 1e-8)
+            # Bound
+            return float(hnr)
+        except Exception:
+            return None
+
+    def _estimate_jitter(self, f0_list: List[float]):
+        """Approximate jitter as relative average absolute period differences."""
+        try:
+            periods = [1.0 / f for f in f0_list if f > 0]
+            if len(periods) < 2:
+                return None
+            diffs = np.abs(np.diff(periods))
+            jitter = np.mean(diffs) / np.mean(periods)
+            return float(jitter)
+        except Exception:
+            return None
+
+    def _estimate_shimmer(self, audio: np.ndarray):
+        """Approximate shimmer as cycle-to-cycle amplitude variation using Hilbert envelope."""
+        try:
+            analytic = signal.hilbert(audio)
+            env = np.abs(analytic)
+            # Split into short frames and compute per-frame peak
+            frame_len = int(0.02 * self.sample_rate)
+            if frame_len < 1:
+                return None
+            peaks = [np.max(env[i:i+frame_len]) for i in range(0, len(env)-frame_len, frame_len)]
+            if len(peaks) < 2:
+                return None
+            peaks = np.array(peaks)
+            diffs = np.abs(np.diff(peaks))
+            shimmer = np.mean(diffs) / (np.mean(peaks) + 1e-8)
+            return float(shimmer)
+        except Exception:
+            return None
+
+    def _compute_mfcc(self, audio: np.ndarray, sr: int, n_mfcc=13):
+        if not LIBROSA_AVAILABLE or librosa is None:
+            return None
+        try:
+            # librosa expects float32
+            audio_f = audio.astype('float32')
+            mfcc = librosa.feature.mfcc(y=audio_f, sr=sr, n_mfcc=n_mfcc)
+            # Return as (n_mfcc, T)
+            return mfcc.astype(np.float32)
+        except Exception as e:
+            print(f"MFCC extraction error: {e}")
+            return None
+
+    def _run_mfcc_model_inference(self):
+        """Run the loaded PyTorch model on the latest MFCC frames and return a score (0-1)."""
+        if not TORCH_AVAILABLE or self.mfcc_model is None or torch is None:
+            return None
+        # Stack last N mfcc frames into a tensor
+        try:
+            # Each entry in mfcc_buffer is (n_mfcc, T_frame). We can concatenate along time
+            mfccs = list(self.mfcc_buffer)
+            if not mfccs:
+                return None
+            concat = np.concatenate(mfccs, axis=1)  # (n_mfcc, total_T)
+            # Normalize
+            concat = (concat - np.mean(concat)) / (np.std(concat) + 1e-8)
+            # Convert to tensor shape (1, 1, n_mfcc, T)
+            try:
+                tensor = torch.from_numpy(concat).unsqueeze(0).unsqueeze(0).float()
+                with torch.no_grad():
+                    out = self.mfcc_model(tensor)
+            except Exception as e:
+                print(f"Error preparing tensor or running model: {e}")
+                return None
+                # Expect model to return probability-like scalar
+                if isinstance(out, torch.Tensor):
+                    score = torch.sigmoid(out).cpu().numpy()
+                    # Flatten to scalar if needed
+                    if score.size == 1:
+                        return float(score.item())
+                    return float(score.flatten()[0])
+                else:
+                    return float(out)
+        except Exception as e:
+            print(f"Error running mfcc model inference: {e}")
+            return None
 
     def _analyze_emotion(self):
         """Estimate emotional tone using pitch and volume stats."""
@@ -508,6 +864,66 @@ class SpeechCoach:
             self.emotion_label = "Calm/Flat"
         else:
             self.emotion_label = "Monotone/Low energy"
+
+    # --- Additional DSP helpers ---
+    def _inference_worker(self):
+        """Continuously run fast inference on recent MFCC frames for low-latency feedback."""
+        if not TORCH_AVAILABLE or self.mfcc_model is None:
+            return
+        import time
+        while self.inference_active:
+            try:
+                with self._mfcc_lock:
+                    if len(self.mfcc_buffer) < 3:
+                        pass
+                    else:
+                        score = self._run_mfcc_model_inference()
+                        with self._score_lock:
+                            self.realtime_model_score = score
+                        # If model signals poor clarity, provide feedback
+                        if score is not None and score < 0.35 and time.time() - self.last_tone_feedback > self.feedback_cooldown:
+                            self._provide_feedback("🧭 Quick check: try clearer articulation and controlled pacing.")
+                            self.last_tone_feedback = time.time()
+            except Exception as e:
+                print(f"Inference worker error: {e}")
+            time.sleep(0.05)
+
+    def _spectral_centroid(self, audio: np.ndarray, sr: int):
+        try:
+            # magnitude spectrum
+            S = np.abs(np.fft.rfft(audio))
+            freqs = np.fft.rfftfreq(len(audio), d=1.0/sr)
+            if S.sum() == 0:
+                return None
+            centroid = np.sum(freqs * S) / (S.sum() + 1e-8)
+            return float(centroid)
+        except Exception:
+            return None
+
+    def _spectral_flatness(self, audio: np.ndarray):
+        try:
+            S = np.abs(np.fft.rfft(audio)) + 1e-12
+            geo_mean = np.exp(np.mean(np.log(S)))
+            arith_mean = np.mean(S)
+            flatness = geo_mean / (arith_mean + 1e-12)
+            return float(flatness)
+        except Exception:
+            return None
+
+    def _harmonic_energy_ratio(self, audio: np.ndarray, sr: int):
+        """Estimate harmonic energy ratio (simple peak-to-noise ratio in harmonic bands)."""
+        try:
+            # Compute short-time FFT and look for harmonic peaks around f0
+            S = np.abs(np.fft.rfft(audio))
+            if S.sum() == 0:
+                return 0.0
+            # harmonic energy = energy in top N peaks
+            peaks_idx = np.argsort(S)[-10:]
+            harmonic_energy = S[peaks_idx].sum()
+            total = S.sum()
+            return float(harmonic_energy / (total + 1e-8))
+        except Exception:
+            return None
     
     def set_feedback_options(self, feedback_str):
         """Set which feedback types are enabled (comma-separated string or 'all')."""

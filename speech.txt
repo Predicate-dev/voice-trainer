@@ -1,0 +1,10 @@
+I'm excited to present my idea for Phase Two: The Beat, a voice-based AI coach 
+designed to help users master the art of public speaking by providing real-time, 
+non-intrusive feedback on pacing, volume, and vocal tone.
+
+The problem I'm tackling is the common struggle for both novice and experienced 
+speakers who, when nervous or unprepared, lose control of their delivery. They 
+speak too quickly, fail to project their voice, and deliver a monotone presentation, 
+all of which erode clarity, impact, and confidence. Existing tools provide feedback 
+after a session, but they fail to provide the real-time, in-the-moment correction 
+and guidance that's necessary to build muscle memory and improve on the spot.

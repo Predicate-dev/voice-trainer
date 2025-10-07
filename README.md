@@ -2,202 +2,133 @@
 
 A Python command-line speech coaching system that provides real-time feedback on speaking skills. This proof-of-concept uses speech recognition, audio analysis, and text-to-speech to help users improve their speaking pace, volume, and tone variation.
 
-## Features
+## What's new (recent additions)
 
-- **Pacing Analysis**: Measures words per minute (WPM) and provides feedback if speaking too fast
-- **Volume Analysis**: Calculates RMS volume and provides feedback if speaking too quietly
-- **Tone Analysis**: Analyzes pitch variation and provides feedback if speech is monotonous
-- **Real-time Feedback**: Provides both audio and visual feedback during speech
-- **Live Metrics**: Displays debugging metrics for volume, WPM, and pitch variation
-- **Keyboard Controls**: Start, pause/resume, and stop your session with keys ([r] Start, [p] Pause/Resume, [s] Stop)
-- **Session Review**: Get a summary of your session (duration, words, alerts) at the end
+- Desktop GUI (PyQt5) with start/stop controls, session review, and TTS preview.
+- Realtime sparkline plots (pyqtgraph) for key DSP metrics: F0, Jitter, HNR, and an optional model confidence score.
+- Vosk integration for fast offline realtime recognition plus a Vosk fallback for session transcripts when Whisper/ffmpeg are not available.
+- Whisper integration for higher-quality end-of-session transcription when `ffmpeg` is installed; the app will automatically try Whisper first and fall back to Vosk if Whisper cannot load audio.
+# Voice Trainer — Speech Coach
 
-## Installation
+Short, opinionated README focused on practical steps and clarity. If you want screenshots or an expanded developer guide I can add them.
 
-1. Clone the repository:
+What this repo contains
+- A small Python-based speech coaching PoC with both a CLI (`main.py`) and a desktop GUI (`speech_coach_app.py`).
+- Core analysis and orchestration live in `speech_coach.py`.
+
+Goals
+- Give realtime feedback (WPM, RMS volume, pitch/F0 variation).
+- Use offline realtime ASR (Vosk) for live feedback and Whisper for higher-quality post-session transcripts when available.
+- Provide advanced DSP metrics and an optional MFCC→PyTorch inference hook for low-latency scoring.
+
+---
+
+## Quick start (3 commands)
+
+Clone, venv, install:
+
 ```bash
 git clone https://github.com/Predicate-dev/voice-trainer.git
 cd voice-trainer
-```
-
-2. Install dependencies:
-```bash
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-**Note**: On some systems, you may need to install additional system dependencies for PyAudio:
-- **Ubuntu/Debian**: `sudo apt-get install portaudio19-dev python3-pyaudio`
-- **macOS**: `brew install portaudio`
-- **Windows**: PyAudio should install directly via pip
+Run the GUI:
 
-**Optional**: For text-to-speech feedback, install system TTS:
-- **Ubuntu/Debian**: `sudo apt-get install espeak espeak-data`
-- **macOS**: Built-in TTS should work
-- **Windows**: Built-in TTS should work
-
-## Project Structure
-
-```
-voice-trainer/
-├── speech_coach.py     # Core speech analysis and coaching engine
-├── main.py            # CLI entry point with argument parsing
-├── demo.py            # Feature demonstration script
-├── test_speech_coach.py # Test suite with simulation
-├── requirements.txt   # Python dependencies
-├── config.ini         # Configuration file for thresholds
-├── README.md          # Documentation
-└── .gitignore         # Git ignore file
-```
-
-## Quick Start
-
-1. **Run the demo** to see what the system can do:
-   ```bash
-   python demo.py
-   ```
-
-2. **Test the core functionality** without microphone:
-   ```bash
-   python test_speech_coach.py
-   ```
-
-3. **Start the speech coach** (requires microphone):
-   ```bash
-   python main.py
-   ```
-   
-   **Controls during session:**
-   - [r] Start
-   - [p] Pause/Resume
-   - [s] Stop (shows session review)
-   - [Ctrl+C] Quit
-
-### Basic Usage
 ```bash
-python main.py
+python speech_coach_app.py
 ```
 
-### With Custom Thresholds
+Or run a quick CLI session/demo:
+
 ```bash
-python main.py --wpm-threshold 150 --volume-threshold 0.02 --pitch-threshold 0.3
+python demo.py
+python test_speech_coach.py   # simulation without mic
+python main.py               # interactive CLI (requires mic)
 ```
 
-### Direct Module Usage
+---
+
+## Installation details
+
+Core Python deps are in `requirements.txt`. For optional features install:
+
 ```bash
-python speech_coach.py
+pip install librosa scipy torch vosk pyqtgraph
 ```
 
-## How It Works
+System packages you may need:
+- PortAudio (macOS: `brew install portaudio`, Ubuntu: `sudo apt-get install portaudio19-dev`)
+- ffmpeg (required by Whisper): `brew install ffmpeg` or `sudo apt-get install ffmpeg`
 
-1. **Microphone Calibration**: The system calibrates to your microphone and ambient noise
-2. **Real-time Analysis**: Continuously analyzes your speech for:
-   - Speaking pace (words per minute)
-   - Volume levels (RMS calculation)
-   - Pitch variation (tone analysis)
-3. **Session Controls**: Use keyboard keys to start, pause, resume, or stop your session at any time.
-4. **Feedback**: Provides immediate feedback when thresholds are exceeded:
-   - "Slow down!" if speaking too fast (default: >180 WPM)
-   - "Project your voice!" if speaking too quietly
-   - "Vary your pitch!" if speech is monotonous
-5. **Live Metrics**: Displays current metrics for debugging and monitoring
-6. **Session Review**: When you stop, a summary is shown: duration, total words, max/min WPM, and alert counts.
+Notes:
+- Whisper requires `ffmpeg` on PATH to load audio. If missing, the app falls back to Vosk for end-of-session transcription.
+- PyTorch and a model file are optional — the app works without them.
 
-## Modes
+---
 
-- **Freestyle Mode**: Speak freely and get real-time feedback on pacing, volume, and tone.
-- **Speech Mode**: Provide a reference speech (text file), recite it, and get a detailed accuracy report and feedback at the end. Uses OpenAI Whisper for highly accurate transcription.
+## Main features (short)
 
-### Speech Mode Example
+- Realtime GUI with Start/Stop, TTS preview, and live DSP metrics.
+- Vosk for offline realtime recognition (word timestamps, partial results).
+- Whisper (optional) for higher-quality end-of-session transcripts.
+- DSP: F0 (autocorr), jitter/shimmer approximations, HNR, spectral centroid/flatness, MFCCs.
+- Optional PyTorch inference worker on MFCC windows (put model at `models/mfcc_model.pt`).
+- Adaptive baselines saved to `user_baseline.json`.
+
+---
+
+## Files & where to put extra assets
+
+- Vosk model (user): `vosk-model/vosk-model-small-en-us-0.15/` — download and unzip from the Vosk site.
+- Optional MFCC PyTorch model: `models/mfcc_model.pt` (user-provided).
+- Baselines: `user_baseline.json` — created/updated automatically.
+
+---
+
+## Troubleshooting (practical fixes)
+
+1) No transcript or "ffmpeg" error
+
+- Install ffmpeg (see above) to enable Whisper. If you can't or don't want to install ffmpeg the app will fall back to Vosk for a session transcript.
+
+2) Native audio crashes / exit code 134
+
+- Reinstall PortAudio and rebuild PyAudio inside the venv:
+
 ```bash
-python main.py --mode speech --reference-speech speech.txt
+brew install portaudio     # macOS
+pip install --force-reinstall --no-binary :all: pyaudio
 ```
-- At the end, you'll see:
-  - The full transcript of your speech (via Whisper)
-  - A word-level comparison with the reference
-  - Highlighted mistakes (missing, extra, or incorrect words)
-  - An overall accuracy score and summary
 
-## Configuration
+3) GUI plots not showing or broken
 
-You can adjust the feedback thresholds:
+- Ensure `pyqtgraph` is installed. If plotting still fails, run `python speech_coach_app.py` from a terminal and inspect console logs.
 
-- `--wpm-threshold`: Words per minute threshold (default: 180)
-- `--volume-threshold`: RMS volume threshold (default: 0.01)
-- `--pitch-threshold`: Pitch variation threshold (default: 0.2)
+4) Model doesn't load
 
-## Requirements
+- Check that `torch` is installed and `models/mfcc_model.pt` exists. The app logs any model load error and continues in heuristic-only mode.
 
-- Python 3.7+
-- Microphone access
-- Internet connection (for speech recognition)
+5) Baseline feels wrong
 
-## Dependencies
+- Delete `user_baseline.json` to reset learned baselines.
 
-- `speech_recognition`: For speech-to-text conversion
-- `pyaudio`: For real-time audio capture
-- `pyttsx3`: For text-to-speech feedback
-- `numpy`: For audio signal processing
-- `openai-whisper`: For accurate offline transcription in speech mode
-- `soundfile`: For saving audio for Whisper
+---
 
-## Troubleshooting
+## Developer notes
 
-- **Microphone not detected**: Ensure your microphone is connected and accessible
-- **PyAudio installation issues**: Install system dependencies as mentioned in installation
-- **Speech recognition errors**: Check internet connection and microphone quality
-- **No feedback**: Adjust thresholds or check microphone sensitivity
+- Keep optional imports behind guards (librosa, torch, vosk). The application must run degraded but usable if optional libs are not present.
+- DSP helpers live in `speech_coach.py` — thread-safety is important for shared buffers and the optional inference worker.
+- Tests: `test_speech_coach.py` is a lightweight simulation harness.
 
-## Future Enhancements
+---
 
-- Advanced pitch analysis using FFT
-- Filler word detection ("um", "uh", etc.)
-- Speaking rhythm analysis
-- Web-based interface
-- Training session recording and playback
+If you'd like, I can implement one of these follow-ups now:
+- Add a "Retry Whisper" button to the GUI (run Whisper post-session once ffmpeg is installed).
+- Add per-plot toggles and autoscaling for the pyqtgraph plots.
+- Add a small `setup-macos.sh` script that installs Homebrew formulae and bootstraps the venv.
 
-## Desktop App (PyQt5)
+Tell me which and I'll implement it.
 
-You can now use Speech Coach as a desktop app with a graphical interface!
 
-### How to Run
-
-1. Make sure you have all dependencies installed:
-   ```sh
-   pip install -r requirements.txt
-   pip install PyQt5
-   ```
-2. Run the app:
-   ```sh
-   python speech_coach_app.py
-   ```
-
-### Features
-- Start/stop a speech coaching session with buttons
-- Live WPM and volume display
-- Session review and feedback in a scrollable window
-- All advanced analytics and advice from the CLI version
-
-## Vosk Integration (Offline, Real-Time Recognition)
-
-- The app now uses [Vosk](https://alphacephei.com/vosk/) for fast, offline, real-time speech recognition.
-- No internet connection or Google API required.
-- Download the English model from https://alphacephei.com/vosk/models and unzip it to `vosk-model/vosk-model-small-en-us-0.15`.
-- Vosk is used for all real-time feedback and live transcription in both CLI and GUI modes.
-
-### How to Set Up Vosk
-
-1. Download the model:
-   - [vosk-model-small-en-us-0.15.zip](https://alphacephei.com/vosk/models)
-2. Unzip it into the `vosk-model` directory:
-   ```sh
-   unzip vosk-model/vosk-model-small-en-us-0.15.zip -d vosk-model/
-   ```
-3. Install the Python package:
-   ```sh
-   pip install vosk
-   ```
-
-### Why Vosk?
-- Fully offline, fast, and accurate for real-time feedback
-- No privacy concerns or API limits
-- Works on macOS, Linux, and Windows
