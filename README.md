@@ -124,11 +124,4 @@ pip install --force-reinstall --no-binary :all: pyaudio
 
 ---
 
-If you'd like, I can implement one of these follow-ups now:
-- Add a "Retry Whisper" button to the GUI (run Whisper post-session once ffmpeg is installed).
-- Add per-plot toggles and autoscaling for the pyqtgraph plots.
-- Add a small `setup-macos.sh` script that installs Homebrew formulae and bootstraps the venv.
-
-Tell me which and I'll implement it.
-
 
